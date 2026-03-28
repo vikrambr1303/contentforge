@@ -1,0 +1,34 @@
+# Overlay for NVIDIA GPU (Linux host + NVIDIA drivers + nvidia-container-toolkit).
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+#
+# Not for Docker Desktop on macOS — Apple GPUs are not exposed as CUDA inside Linux containers.
+# Ollama + worker share the GPU; adjust OLLAMA_NUM_PARALLEL if you hit VRAM limits.
+
+services:
+  ollama:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  worker:
+    build:
+      context: ./contentforge
+      dockerfile: Dockerfile.gpu
+    shm_size: "4gb"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      # Optional: more threads for dataloader / numpy alongside GPU
+      OMP_NUM_THREADS: "8"
+      MKL_NUM_THREADS: "8"

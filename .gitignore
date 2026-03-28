@@ -1,0 +1,17 @@
+.env
+data/
+models/
+.hf-download-venv/
+*.pyc
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+node_modules/
+dist/
+.DS_Store
+*.log
+.idea/
+.vscode/
+alembic.ini.bak
+coverage_html/

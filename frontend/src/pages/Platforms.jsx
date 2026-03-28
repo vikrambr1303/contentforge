@@ -1,0 +1,130 @@
+import { useEffect, useState } from "react";
+import PlatformCard from "../components/PlatformCard.jsx";
+import PageHeader from "../components/PageHeader.jsx";
+import * as api from "../api/client.js";
+
+export default function Platforms() {
+  const [plugins, setPlugins] = useState([]);
+  const [accounts, setAccounts] = useState([]);
+  const [history, setHistory] = useState([]);
+  const [form, setForm] = useState({
+    platform: "instagram",
+    display_name: "",
+    access_token: "",
+    instagram_user_id: "",
+  });
+
+  function refresh() {
+    api.platforms.list().then(setPlugins);
+    api.platforms.accounts().then(setAccounts);
+    api.platforms.history().then(setHistory);
+  }
+
+  useEffect(() => {
+    refresh();
+  }, []);
+
+  function submit(e) {
+    e.preventDefault();
+    api.platforms
+      .addAccount({
+        platform: form.platform,
+        display_name: form.display_name,
+        credentials: {
+          access_token: form.access_token,
+          instagram_user_id: form.instagram_user_id,
+        },
+      })
+      .then(() => {
+        setForm({ ...form, display_name: "", access_token: "", instagram_user_id: "" });
+        refresh();
+      })
+      .catch((err) => alert(err.response?.data?.detail || err.message));
+  }
+
+  return (
+    <div className="space-y-10">
+      <PageHeader
+        title="Platforms"
+        subtitle="Available posting plugins, connected accounts, and recent publish attempts."
+      />
+
+      <div className="grid sm:grid-cols-2 gap-4">
+        {plugins.map((p) => (
+          <PlatformCard key={p.name} meta={p} />
+        ))}
+      </div>
+
+      <form onSubmit={submit} className="cf-card p-5 sm:p-6 space-y-4 max-w-lg">
+        <h2 className="text-lg font-semibold text-white">Add account</h2>
+        <label className="block">
+          <span className="cf-label mb-1.5">Display name</span>
+          <input
+            className="cf-input"
+            value={form.display_name}
+            onChange={(e) => setForm({ ...form, display_name: e.target.value })}
+            required
+          />
+        </label>
+        <label className="block">
+          <span className="cf-label mb-1.5">Long-lived access token</span>
+          <input
+            className="cf-input"
+            value={form.access_token}
+            onChange={(e) => setForm({ ...form, access_token: e.target.value })}
+            required
+          />
+        </label>
+        <label className="block">
+          <span className="cf-label mb-1.5">Instagram Business Account ID</span>
+          <input
+            className="cf-input"
+            value={form.instagram_user_id}
+            onChange={(e) => setForm({ ...form, instagram_user_id: e.target.value })}
+            required
+          />
+        </label>
+        <button type="submit" className="cf-btn-primary">
+          Save & validate
+        </button>
+      </form>
+
+      <div>
+        <h2 className="text-sm font-semibold text-slate-300 mb-3">Accounts</h2>
+        <ul className="space-y-2">
+          {accounts.map((a) => (
+            <li
+              key={a.id}
+              className="cf-card-muted flex items-center justify-between gap-3 px-4 py-3 text-sm"
+            >
+              <span className="text-slate-200">
+                {a.display_name} <span className="text-slate-500">· {a.platform}</span>
+              </span>
+              <button
+                type="button"
+                onClick={() => api.platforms.removeAccount(a.id).then(refresh)}
+                className="cf-btn-ghost-danger text-xs shrink-0"
+              >
+                Remove
+              </button>
+            </li>
+          ))}
+          {!accounts.length && <li className="text-slate-500 text-sm">No accounts yet.</li>}
+        </ul>
+      </div>
+
+      <div>
+        <h2 className="text-sm font-semibold text-slate-300 mb-3">Post history</h2>
+        <ul className="space-y-2 text-sm text-slate-400">
+          {history.slice(0, 20).map((h) => (
+            <li key={h.id} className="cf-card-muted px-3 py-2 text-xs sm:text-sm">
+              Content #{h.content_item_id} — {h.status}
+              {h.platform_post_id && ` · ${h.platform_post_id}`}
+            </li>
+          ))}
+          {!history.length && <li className="text-slate-500">No posts yet.</li>}
+        </ul>
+      </div>
+    </div>
+  );
+}

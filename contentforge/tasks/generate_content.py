@@ -1,0 +1,617 @@
+import logging
+from datetime import datetime, timezone
+from pathlib import Path
+
+from celery.exceptions import SoftTimeLimitExceeded
+from sqlalchemy.orm import Session
+
+from config import get_settings
+from database import SessionLocal
+from models.app_settings import AppSettings
+from models.content import ContentItem
+from models.generation_job import GenerationJob
+from models.topic import Topic
+from services import image_service, llm_service, video_service
+from tasks.celery_app import app
+
+logger = logging.getLogger(__name__)
+
+
+def _report_job_progress(job_id: int, pct: int, stage: str) -> None:
+    """Update job row from a short-lived session (safe to call from SD step callbacks)."""
+    db = SessionLocal()
+    try:
+        job = db.get(GenerationJob, job_id)
+        if job and job.status == "running":
+            np = min(100, max(0, int(pct)))
+            job.progress_percent = max(job.progress_percent, np)
+            if stage:
+                job.stage = stage[:128]
+            db.commit()
+    finally:
+        db.close()
+
+
+def _diffusion_step_reporter(job_id: int, lo: int, hi: int):
+    def _inner(cur: int, total: int) -> None:
+        span = hi - lo
+        p = lo + int(span * cur / max(total, 1))
+        _report_job_progress(job_id, min(hi, p), "Generating background")
+
+    return _inner
+
+
+# Global rules for Stable Diffusion backgrounds (prepended style/mood still come from the topic).
+_IMAGE_PROMPT_RULES = (
+    "no humans, no faces, no people, no hands, no silhouettes of people; "
+    "abstract conceptual imagery only, animated illustration and motion-design aesthetic, "
+    "stylized shapes, color fields, light and texture, non-photorealistic"
+)
+
+_SD_NEGATIVE_PROMPT = (
+    "person, people, human, man, woman, child, face, portrait, head, hands, body, "
+    "crowd, selfie, figure, silhouette, realistic skin, stock photo model, "
+    "photograph of person, walking person, eyes looking at camera"
+)
+
+
+def _sd_background_prompt(image_style: str, mood: str) -> str:
+    # Keep tail short — CLIP max ~77 tokens; long tails get truncated.
+    return (
+        f"{image_style}, {mood}, {_IMAGE_PROMPT_RULES}, "
+        "cinematic light, high quality, no text, vertical composition"
+    )
+
+
+def _prepare_background_prompts(
+    topic: Topic,
+    mood: str,
+    model: str,
+    *,
+    quote_excerpt: str | None = None,
+) -> tuple[str, str, dict[str, str | None]]:
+    """LLM-enriched SD prompt when possible; returns (prompt, negative, enrich dict for Unsplash hint)."""
+    enriched = llm_service.enrich_sd_prompt_sync(topic, mood, model, quote_excerpt=quote_excerpt)
+    visual = enriched.get("visual")
+    if visual:
+        prompt = (
+            f"{visual}, {_IMAGE_PROMPT_RULES}, "
+            "cinematic light, high quality, no text, vertical composition"
+        )
+        neg = _SD_NEGATIVE_PROMPT
+        extra = enriched.get("negative_extra")
+        if extra:
+            neg = f"{_SD_NEGATIVE_PROMPT}, {extra}"
+        return prompt, neg, enriched
+    return _sd_background_prompt(topic.image_style, mood), _SD_NEGATIVE_PROMPT, enriched
+
+
+def _produce_background(
+    *,
+    app_s: AppSettings,
+    topic: Topic,
+    mood: str,
+    model: str,
+    enriched: dict[str, str | None],
+    prompt: str,
+    neg_prompt: str,
+    bg_path: Path,
+    job_id: int,
+    step_lo: int,
+    step_hi: int,
+    ref_path: Path | None,
+    ref_strength: float,
+) -> str:
+    """Write background JPEG; returns value stored on ContentItem.image_model."""
+    source = (app_s.background_source or "diffusers").strip().lower()
+    if source not in ("diffusers", "unsplash"):
+        source = "diffusers"
+
+    if source == "unsplash":
+        key = get_settings().unsplash_access_key.strip()
+        if not key:
+            raise ValueError(
+                "Background source is Unsplash but UNSPLASH_ACCESS_KEY is empty. "
+                "Set it in the environment (see .env.example) or switch to Stable Diffusion in Settings."
+            )
+        mid = (step_lo + step_hi) // 2
+        _report_job_progress(job_id, mid, "Finding background photo")
+        search_q = llm_service.stock_photo_search_query_sync(
+            topic,
+            mood,
+            model,
+            style_hint=enriched.get("visual"),
+        )
+        image_service.fetch_unsplash_background(search_q, bg_path, access_key=key)
+        return "unsplash"
+
+    step_cb = _diffusion_step_reporter(job_id, step_lo, step_hi)
+    diffusers_path = app_s.diffusers_model_path or "/models/stable-diffusion"
+    image_service.generate_background(
+        diffusers_path,
+        prompt,
+        bg_path,
+        negative_prompt=neg_prompt,
+        on_diffusion_step=step_cb,
+        reference_image_path=ref_path,
+        reference_strength=ref_strength,
+    )
+    return diffusers_path
+
+
+def _topic_style_reference(topic: Topic) -> tuple[Path | None, float]:
+    """Resolve optional img2img reference under data_dir; strength clamped."""
+    rel = topic.style_reference_relpath
+    if not rel:
+        return None, 0.38
+    p = Path(get_settings().data_dir) / rel
+    if not p.is_file():
+        return None, 0.38
+    s = topic.reference_image_strength
+    if s is None:
+        s = 0.38
+    return p, max(0.12, min(0.92, float(s)))
+
+
+def _settings_row(db: Session) -> AppSettings:
+    row = db.get(AppSettings, 1)
+    if row is None:
+        row = AppSettings(
+            id=1,
+            ollama_model="llama3.2",
+            diffusers_model_path="/models/stable-diffusion",
+            default_image_style="cinematic lighting",
+            caption_cta="",
+            generation_retry_limit=2,
+            background_source="diffusers",
+        )
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+    return row
+
+
+def _generation_retry_limit(app_s: AppSettings) -> int:
+    v = app_s.generation_retry_limit
+    if v is None:
+        return 2
+    return max(0, min(10, int(v)))
+
+
+def _mark_job_retrying(db: Session, job_id: int, next_attempt: int, total: int) -> None:
+    job = db.get(GenerationJob, job_id)
+    if not job:
+        return
+    job.status = "running"
+    job.completed_at = None
+    job.error_message = None
+    job.stage = f"Retry {next_attempt}/{total}"
+    db.commit()
+
+
+def _fail_job_final(db: Session, job_id: int, message: str) -> None:
+    job = db.get(GenerationJob, job_id)
+    if not job:
+        return
+    job.status = "failed"
+    job.error_message = message[:2000]
+    job.stage = "Failed"
+    job.completed_at = datetime.now(timezone.utc)
+    db.commit()
+
+
+def _run_full_generation_once(
+    self,
+    db: Session,
+    job_id: int,
+    include_video: bool,
+    attempt_index: int,
+    total_attempts: int,
+) -> dict:
+    job = db.get(GenerationJob, job_id)
+    if not job:
+        return {"ok": False, "error": "job not found"}
+
+    if attempt_index == 0:
+        job.status = "running"
+        job.celery_task_id = self.request.id
+        job.progress_percent = max(job.progress_percent, 3)
+        job.stage = "Starting"
+        db.commit()
+        logger.info(
+            "run_full_generation started job_id=%s celery_task_id=%s",
+            job_id,
+            self.request.id,
+        )
+    else:
+        job.stage = f"Retry {attempt_index + 1}/{total_attempts}"
+        db.commit()
+        logger.info(
+            "run_full_generation retry job_id=%s attempt %s/%s",
+            job_id,
+            attempt_index + 1,
+            total_attempts,
+        )
+
+    topic = db.get(Topic, job.topic_id)
+    if not topic or topic.deleted_at is not None:
+        job.status = "failed"
+        job.error_message = "Topic missing"
+        job.stage = "Failed"
+        job.completed_at = datetime.now(timezone.utc)
+        db.commit()
+        return {"ok": False}
+
+    job.progress_percent = max(job.progress_percent, 12)
+    job.stage = "Writing quote"
+    db.commit()
+
+    app_s = _settings_row(db)
+    model = app_s.ollama_model
+
+    item = db.get(ContentItem, job.content_item_id) if job.content_item_id else None
+    if not item:
+        item = ContentItem(topic_id=topic.id, status="draft")
+        db.add(item)
+        db.flush()
+        job.content_item_id = item.id
+        db.commit()
+        db.refresh(item)
+
+    q = llm_service.generate_quote_sync(topic, model)
+    item.quote_text = q["quote"]
+    item.quote_author = q["author"]
+    item.generation_model = model
+    mood = q["mood"]
+
+    job.progress_percent = max(job.progress_percent, 22)
+    job.stage = "Refining image prompt"
+    db.commit()
+
+    prompt, neg_prompt, enriched_bg = _prepare_background_prompts(
+        topic, mood, model, quote_excerpt=q.get("quote")
+    )
+
+    job.progress_percent = max(job.progress_percent, 24)
+    job.stage = "Generating background"
+    db.commit()
+
+    bg_rel = f"backgrounds/{item.id}_background.jpg"
+    img_rel = f"images/{item.id}_composed.jpg"
+    data_root = Path(get_settings().data_dir)
+    bg_path = data_root / bg_rel
+    img_path = data_root / img_rel
+
+    ref_path, ref_strength = _topic_style_reference(topic)
+    image_model_label = _produce_background(
+        app_s=app_s,
+        topic=topic,
+        mood=mood,
+        model=model,
+        enriched=enriched_bg,
+        prompt=prompt,
+        neg_prompt=neg_prompt,
+        bg_path=bg_path,
+        job_id=job.id,
+        step_lo=26,
+        step_hi=86,
+        ref_path=ref_path,
+        ref_strength=ref_strength,
+    )
+    item.background_path = bg_rel
+    item.image_model = image_model_label
+    job.progress_percent = max(job.progress_percent, 88)
+    job.stage = "Compositing text"
+    db.commit()
+    image_service.composite_quote(bg_path, img_path, item.quote_text or "", item.quote_author or "")
+    item.image_path = img_rel
+
+    if include_video:
+        job.progress_percent = max(job.progress_percent, 92)
+        job.stage = "Rendering video"
+        db.commit()
+        vid_rel = f"videos/{item.id}.mp4"
+        vid_path = data_root / vid_rel
+        video_service.make_ken_burns_video(img_path, vid_path)
+        item.video_path = vid_rel
+
+    job.status = "done"
+    job.progress_percent = 100
+    job.stage = "Complete"
+    job.completed_at = datetime.now(timezone.utc)
+    db.commit()
+    logger.info("run_full_generation finished job_id=%s item_id=%s", job_id, item.id)
+    return {"ok": True, "content_item_id": item.id}
+
+
+@app.task(
+    bind=True,
+    name="tasks.generate_content.run_full_generation",
+    soft_time_limit=3600,
+    time_limit=3720,
+)
+def run_full_generation(self, job_id: int, include_video: bool = False) -> dict:
+    db = SessionLocal()
+    try:
+        job = db.get(GenerationJob, job_id)
+        if not job:
+            return {"ok": False, "error": "job not found"}
+
+        app_s = _settings_row(db)
+        retry_limit = _generation_retry_limit(app_s)
+        total = retry_limit + 1
+        last_exc: BaseException | None = None
+
+        for attempt in range(total):
+            try:
+                if attempt > 0:
+                    db.rollback()
+                return _run_full_generation_once(self, db, job_id, include_video, attempt, total)
+            except SoftTimeLimitExceeded:
+                db.rollback()
+                job = db.get(GenerationJob, job_id)
+                if job:
+                    job.status = "failed"
+                    job.error_message = (
+                        "Generation timed out (soft limit). CPU image generation can exceed an hour; "
+                        "retry or give the worker more RAM/CPU."
+                    )[:2000]
+                    job.stage = "Failed"
+                    job.completed_at = datetime.now(timezone.utc)
+                    db.commit()
+                logger.warning("run_full_generation soft time limit job_id=%s", job_id)
+                raise
+            except Exception as e:  # noqa: BLE001
+                last_exc = e
+                logger.warning(
+                    "run_full_generation job_id=%s failed attempt %s/%s: %s",
+                    job_id,
+                    attempt + 1,
+                    total,
+                    e,
+                )
+                if attempt >= retry_limit:
+                    db.rollback()
+                    _fail_job_final(db, job_id, str(e))
+                    raise
+                db.rollback()
+                _mark_job_retrying(db, job_id, attempt + 2, total)
+        if last_exc:
+            raise last_exc
+        return {"ok": False}
+    finally:
+        db.close()
+
+
+def _run_quote_only_once(
+    self,
+    db: Session,
+    job_id: int,
+    attempt_index: int,
+    total_attempts: int,
+) -> dict:
+    job = db.get(GenerationJob, job_id)
+    if not job:
+        return {"ok": False}
+
+    if attempt_index == 0:
+        job.status = "running"
+        job.celery_task_id = self.request.id
+        job.progress_percent = max(job.progress_percent, 5)
+        job.stage = "Writing quote"
+        db.commit()
+    else:
+        job.stage = f"Retry {attempt_index + 1}/{total_attempts}"
+        db.commit()
+
+    topic = db.get(Topic, job.topic_id)
+    app_s = _settings_row(db)
+    item = db.get(ContentItem, job.content_item_id) if job.content_item_id else None
+    if not topic or not item:
+        job.status = "failed"
+        job.error_message = "Missing topic or content"
+        job.stage = "Failed"
+        job.completed_at = datetime.now(timezone.utc)
+        db.commit()
+        return {"ok": False}
+
+    q = llm_service.generate_quote_sync(topic, app_s.ollama_model)
+    item.quote_text = q["quote"]
+    item.quote_author = q["author"]
+    item.generation_model = app_s.ollama_model
+    job.status = "done"
+    job.progress_percent = 100
+    job.stage = "Complete"
+    job.completed_at = datetime.now(timezone.utc)
+    db.commit()
+    return {"ok": True}
+
+
+@app.task(
+    bind=True,
+    name="tasks.generate_content.run_quote_only",
+    soft_time_limit=600,
+    time_limit=660,
+)
+def run_quote_only(self, job_id: int) -> dict:
+    db = SessionLocal()
+    try:
+        job = db.get(GenerationJob, job_id)
+        if not job:
+            return {"ok": False}
+
+        app_s = _settings_row(db)
+        retry_limit = _generation_retry_limit(app_s)
+        total = retry_limit + 1
+        last_exc: BaseException | None = None
+
+        for attempt in range(total):
+            try:
+                if attempt > 0:
+                    db.rollback()
+                return _run_quote_only_once(self, db, job_id, attempt, total)
+            except SoftTimeLimitExceeded:
+                db.rollback()
+                job = db.get(GenerationJob, job_id)
+                if job:
+                    job.status = "failed"
+                    job.error_message = "Quote generation timed out. Check Ollama is reachable."[:2000]
+                    job.stage = "Failed"
+                    job.completed_at = datetime.now(timezone.utc)
+                    db.commit()
+                raise
+            except Exception as e:  # noqa: BLE001
+                last_exc = e
+                logger.warning(
+                    "run_quote_only job_id=%s failed attempt %s/%s: %s",
+                    job_id,
+                    attempt + 1,
+                    total,
+                    e,
+                )
+                if attempt >= retry_limit:
+                    db.rollback()
+                    _fail_job_final(db, job_id, str(e))
+                    raise
+                db.rollback()
+                _mark_job_retrying(db, job_id, attempt + 2, total)
+        if last_exc:
+            raise last_exc
+        return {"ok": False}
+    finally:
+        db.close()
+
+
+def _run_image_only_once(
+    self,
+    db: Session,
+    job_id: int,
+    attempt_index: int,
+    total_attempts: int,
+) -> dict:
+    job = db.get(GenerationJob, job_id)
+    if not job:
+        return {"ok": False}
+
+    if attempt_index == 0:
+        job.status = "running"
+        job.celery_task_id = self.request.id
+        job.progress_percent = max(job.progress_percent, 5)
+        job.stage = "Preparing image"
+        db.commit()
+    else:
+        job.stage = f"Retry {attempt_index + 1}/{total_attempts}"
+        db.commit()
+
+    topic = db.get(Topic, job.topic_id)
+    app_s = _settings_row(db)
+    item = db.get(ContentItem, job.content_item_id) if job.content_item_id else None
+    if not topic or not item or not item.quote_text:
+        job.status = "failed"
+        job.error_message = "Missing data"
+        job.stage = "Failed"
+        job.completed_at = datetime.now(timezone.utc)
+        db.commit()
+        return {"ok": False}
+
+    q = {"mood": "contemplative"}
+    bg_rel = f"backgrounds/{item.id}_background.jpg"
+    img_rel = f"images/{item.id}_composed.jpg"
+    data_root = Path(get_settings().data_dir)
+    bg_path = data_root / bg_rel
+    img_path = data_root / img_rel
+    job.progress_percent = max(job.progress_percent, 16)
+    job.stage = "Refining image prompt"
+    db.commit()
+    prompt, neg_prompt, enriched_bg = _prepare_background_prompts(
+        topic, q["mood"], app_s.ollama_model, quote_excerpt=item.quote_text
+    )
+    job.progress_percent = max(job.progress_percent, 18)
+    job.stage = "Generating background"
+    db.commit()
+    ref_path, ref_strength = _topic_style_reference(topic)
+    image_model_label = _produce_background(
+        app_s=app_s,
+        topic=topic,
+        mood=q["mood"],
+        model=app_s.ollama_model,
+        enriched=enriched_bg,
+        prompt=prompt,
+        neg_prompt=neg_prompt,
+        bg_path=bg_path,
+        job_id=job.id,
+        step_lo=20,
+        step_hi=88,
+        ref_path=ref_path,
+        ref_strength=ref_strength,
+    )
+    item.background_path = bg_rel
+    item.image_model = image_model_label
+    job.progress_percent = max(job.progress_percent, 90)
+    job.stage = "Compositing text"
+    db.commit()
+    image_service.composite_quote(bg_path, img_path, item.quote_text, item.quote_author or "")
+    item.image_path = img_rel
+    job.status = "done"
+    job.progress_percent = 100
+    job.stage = "Complete"
+    job.completed_at = datetime.now(timezone.utc)
+    db.commit()
+    return {"ok": True}
+
+
+@app.task(
+    bind=True,
+    name="tasks.generate_content.run_image_only",
+    soft_time_limit=3600,
+    time_limit=3720,
+)
+def run_image_only(self, job_id: int) -> dict:
+    db = SessionLocal()
+    try:
+        job = db.get(GenerationJob, job_id)
+        if not job:
+            return {"ok": False}
+
+        app_s = _settings_row(db)
+        retry_limit = _generation_retry_limit(app_s)
+        total = retry_limit + 1
+        last_exc: BaseException | None = None
+
+        for attempt in range(total):
+            try:
+                if attempt > 0:
+                    db.rollback()
+                return _run_image_only_once(self, db, job_id, attempt, total)
+            except SoftTimeLimitExceeded:
+                db.rollback()
+                job = db.get(GenerationJob, job_id)
+                if job:
+                    job.status = "failed"
+                    job.error_message = (
+                        "Image generation timed out (soft limit). Retry or allocate more resources."
+                    )[:2000]
+                    job.stage = "Failed"
+                    job.completed_at = datetime.now(timezone.utc)
+                    db.commit()
+                raise
+            except Exception as e:  # noqa: BLE001
+                last_exc = e
+                logger.warning(
+                    "run_image_only job_id=%s failed attempt %s/%s: %s",
+                    job_id,
+                    attempt + 1,
+                    total,
+                    e,
+                )
+                if attempt >= retry_limit:
+                    db.rollback()
+                    _fail_job_final(db, job_id, str(e))
+                    raise
+                db.rollback()
+                _mark_job_retrying(db, job_id, attempt + 2, total)
+        if last_exc:
+            raise last_exc
+        return {"ok": False}
+    finally:
+        db.close()

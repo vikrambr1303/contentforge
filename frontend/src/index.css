@@ -1,0 +1,62 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    margin: 0;
+    min-height: 100vh;
+    @apply antialiased text-slate-100 bg-forge-950;
+    background-image:
+      radial-gradient(ellipse 100% 60% at 50% -15%, rgba(56, 189, 248, 0.09), transparent 55%),
+      radial-gradient(ellipse 50% 40% at 100% 0%, rgba(129, 140, 248, 0.06), transparent 50%),
+      radial-gradient(ellipse 40% 35% at 0% 100%, rgba(14, 165, 233, 0.05), transparent 45%);
+    background-attachment: fixed;
+  }
+}
+
+@layer components {
+  .cf-card {
+    @apply rounded-2xl border border-forge-800/90 bg-forge-900/55 shadow-lg shadow-black/30 backdrop-blur-sm;
+  }
+
+  .cf-card-muted {
+    @apply rounded-2xl border border-forge-800/70 bg-forge-950/40;
+  }
+
+  .cf-label {
+    @apply block text-[11px] font-medium uppercase tracking-wider text-slate-500;
+  }
+
+  .cf-input {
+    @apply w-full rounded-lg border border-forge-700/80 bg-forge-950/90 px-3 py-2.5 text-sm text-slate-100 shadow-inner shadow-black/20 transition;
+    @apply placeholder:text-slate-600 focus:border-sky-500/45 focus:outline-none focus:ring-2 focus:ring-sky-500/20;
+  }
+
+  .cf-select {
+    @apply cf-input cursor-pointer;
+  }
+
+  .cf-btn-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg bg-gradient-to-b from-sky-500 to-sky-600 px-4 py-2.5 text-sm font-medium text-white shadow-md shadow-sky-950/40 transition;
+    @apply hover:from-sky-400 hover:to-sky-500 disabled:pointer-events-none disabled:opacity-45;
+  }
+
+  .cf-btn-secondary {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg border border-forge-600/90 bg-forge-800/40 px-3 py-2 text-sm font-medium text-slate-200 transition;
+    @apply hover:border-forge-500 hover:bg-forge-800/70 disabled:pointer-events-none disabled:opacity-40;
+  }
+
+  .cf-btn-danger {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg border border-rose-900/55 bg-rose-950/35 px-3 py-2 text-sm font-medium text-rose-100 transition;
+    @apply hover:border-rose-800/80 hover:bg-rose-950/55 disabled:pointer-events-none disabled:opacity-40;
+  }
+
+  .cf-btn-ghost {
+    @apply inline-flex items-center justify-center rounded-lg px-3 py-1.5 text-sm font-medium text-slate-400 transition hover:bg-forge-800/70 hover:text-white;
+  }
+
+  .cf-btn-ghost-danger {
+    @apply cf-btn-ghost text-rose-300 hover:text-rose-200 hover:bg-rose-950/30;
+  }
+}
