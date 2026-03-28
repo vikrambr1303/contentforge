@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
+import BlogContentCard from "../components/BlogContentCard.jsx";
 import ContentCard from "../components/ContentCard.jsx";
 import PageHeader from "../components/PageHeader.jsx";
 import * as api from "../api/client.js";
@@ -10,6 +11,7 @@ export default function ContentLibrary() {
   const [accounts, setAccounts] = useState([]);
   const [topicFilter, setTopicFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
+  const [kindFilter, setKindFilter] = useState("");
   const [selected, setSelected] = useState(() => new Set());
   const [zipModal, setZipModal] = useState(false);
   const [includeVideo, setIncludeVideo] = useState(false);
@@ -23,6 +25,7 @@ export default function ContentLibrary() {
       .list({
         topic_id: topicFilter ? Number(topicFilter) : undefined,
         status: statusFilter || undefined,
+        kind: kindFilter || undefined,
         limit: 50,
       })
       .then(setItems);
@@ -34,7 +37,7 @@ export default function ContentLibrary() {
 
   useEffect(() => {
     load();
-  }, [topicFilter, statusFilter]);
+  }, [topicFilter, statusFilter, kindFilter]);
 
   function toggle(id) {
     setSelected((prev) => {
@@ -100,7 +103,7 @@ export default function ContentLibrary() {
     <div className="space-y-8">
       <PageHeader
         title="Content Library"
-        subtitle="Browse, approve, edit, download, and post your generated pieces."
+        subtitle="Social quote cards and blog posts (Markdown + diagrams). Filter by type, then copy or download for Medium and other editors."
       >
         <button
           type="button"
@@ -138,15 +141,23 @@ export default function ContentLibrary() {
               <option value="posted">Posted</option>
             </select>
           </label>
+          <label className="block flex-1 min-w-[10rem]">
+            <span className="cf-label mb-1.5">Type</span>
+            <select className="cf-select" value={kindFilter} onChange={(e) => setKindFilter(e.target.value)}>
+              <option value="">All types</option>
+              <option value="social">Social (quote + image)</option>
+              <option value="blog">Blog (markdown)</option>
+            </select>
+          </label>
         </div>
       </div>
 
       {!items.length ? (
         <div className="cf-card-muted p-12 text-center max-w-lg mx-auto">
           <p className="text-slate-400 text-sm leading-relaxed">
-            {topicFilter || statusFilter
+            {topicFilter || statusFilter || kindFilter
               ? "Nothing matches these filters. Try clearing filters or generate new content."
-              : "No content yet. Create a topic, then run a full generation from the Generate page."}
+              : "No content yet. Create a topic, then use Generate for social posts or blog articles."}
           </p>
           <div className="mt-6 flex flex-wrap gap-3 justify-center">
             <Link to="/generate" className="cf-btn-primary">
@@ -159,18 +170,30 @@ export default function ContentLibrary() {
         </div>
       ) : (
         <div className="grid sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-5">
-          {items.map((c) => (
-            <ContentCard
-              key={c.id}
-              item={c}
-              topic={topicMap[c.topic_id]}
-              selected={selected.has(c.id)}
-              onToggle={() => toggle(c.id)}
-              accounts={accounts}
-              onRefresh={load}
-              onDeleted={clearSelectionFor}
-            />
-          ))}
+          {items.map((c) =>
+            c.kind === "blog" ? (
+              <BlogContentCard
+                key={c.id}
+                item={c}
+                topic={topicMap[c.topic_id]}
+                selected={selected.has(c.id)}
+                onToggle={() => toggle(c.id)}
+                onRefresh={load}
+                onDeleted={clearSelectionFor}
+              />
+            ) : (
+              <ContentCard
+                key={c.id}
+                item={c}
+                topic={topicMap[c.topic_id]}
+                selected={selected.has(c.id)}
+                onToggle={() => toggle(c.id)}
+                accounts={accounts}
+                onRefresh={load}
+                onDeleted={clearSelectionFor}
+              />
+            )
+          )}
         </div>
       )}
 

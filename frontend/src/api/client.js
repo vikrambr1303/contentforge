@@ -31,6 +31,8 @@ export const content = {
   remove: (id) => client.delete(`/content/${id}`),
   downloadImageUrl: (id) => `/api/content/${id}/download/image`,
   downloadVideoUrl: (id) => `/api/content/${id}/download/video`,
+  downloadBlogZipUrl: (id) => `/api/content/${id}/download/blog`,
+  diagramUrl: (id, index) => `/api/content/${id}/blog/diagram/${index}`,
   batchZip: (ids, includeVideo) =>
     client
       .post(
@@ -43,6 +45,7 @@ export const content = {
 
 export const generation = {
   generate: (body) => client.post("/generate", body).then((r) => r.data),
+  blog: (topic_id) => client.post("/generate/blog", { topic_id }).then((r) => r.data),
   quote: (topic_id) => client.post("/generate/quote", { topic_id }).then((r) => r.data),
   image: (content_item_id) =>
     client.post("/generate/image", { content_item_id }).then((r) => r.data),

@@ -58,18 +58,28 @@ export default function Dashboard() {
       <div>
         <h2 className="text-sm font-semibold text-slate-300 mb-3">Recent content</h2>
         <ul className="space-y-2">
-          {content.map((c) => (
-            <li
-              key={c.id}
-              className="cf-card-muted flex flex-wrap items-baseline justify-between gap-2 px-4 py-3 text-sm text-slate-300"
-            >
-              <span className="min-w-0">
-                <span className="text-slate-500 font-mono text-xs mr-2">#{c.id}</span>
-                <span className="text-slate-200">{(c.quote_text || "").slice(0, 100)}{(c.quote_text || "").length > 100 ? "…" : ""}</span>
-              </span>
-              <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 shrink-0">{c.status}</span>
-            </li>
-          ))}
+          {content.map((c) => {
+            const preview =
+              c.kind === "blog"
+                ? (c.blog_markdown || "").match(/^#\s+(.+)$/m)?.[1]?.trim() || "Blog post"
+                : c.quote_text || "";
+            const short = preview.slice(0, 100) + (preview.length > 100 ? "…" : "");
+            return (
+              <li
+                key={c.id}
+                className="cf-card-muted flex flex-wrap items-baseline justify-between gap-2 px-4 py-3 text-sm text-slate-300"
+              >
+                <span className="min-w-0">
+                  <span className="text-slate-500 font-mono text-xs mr-2">#{c.id}</span>
+                  {c.kind === "blog" ? (
+                    <span className="text-violet-300/90 text-[10px] font-semibold uppercase tracking-wide mr-2">Blog</span>
+                  ) : null}
+                  <span className="text-slate-200">{short || "—"}</span>
+                </span>
+                <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 shrink-0">{c.status}</span>
+              </li>
+            );
+          })}
           {!content.length && <li className="text-slate-500 text-sm">No content yet.</li>}
         </ul>
       </div>

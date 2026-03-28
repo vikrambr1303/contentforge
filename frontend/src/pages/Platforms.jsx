@@ -13,7 +13,7 @@ export default function Platforms() {
     access_token: "",
     instagram_user_id: "",
     privacy_level: "SELF_ONLY",
-    mark_as_ai_generated: true,
+    mark_as_ai_generated: false,
   });
 
   function refresh() {
@@ -142,15 +142,23 @@ export default function Platforms() {
                 (validation uses this when saving).
               </p>
             </label>
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={form.mark_as_ai_generated}
-                onChange={(e) => setForm({ ...form, mark_as_ai_generated: e.target.checked })}
-                className="rounded border-forge-600 bg-forge-900 text-sky-500"
-              />
-              <span className="text-sm text-slate-300">Mark posts as AI-generated (is_aigc)</span>
-            </label>
+            <div className="space-y-1.5">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={form.mark_as_ai_generated}
+                  onChange={(e) => setForm({ ...form, mark_as_ai_generated: e.target.checked })}
+                  className="rounded border-forge-600 bg-forge-900 text-sky-500"
+                />
+                <span className="text-sm text-slate-300">
+                  Mark posts as AI-generated on TikTok (<code className="text-slate-400">is_aigc</code>)
+                </span>
+              </label>
+              <p className="text-xs text-slate-500 leading-relaxed pl-7">
+                Off by default. Instagram posting in ContentForge does not send an AI flag. Enable this only if you want
+                TikTok&apos;s AI label or your situation requires disclosure per TikTok&apos;s policies.
+              </p>
+            </div>
             <p className="text-xs text-slate-500 leading-relaxed">
               TikTok only accepts <strong className="text-slate-400">video</strong>. Use content with an MP4 and set{" "}
               <code className="text-slate-400">PUBLIC_BASE_URL</code> or <code className="text-slate-400">NGROK_LOCAL_API_URL</code>{" "}

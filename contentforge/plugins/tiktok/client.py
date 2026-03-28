@@ -68,7 +68,7 @@ def init_direct_video_publish(
     title: str,
     privacy_level: str,
     *,
-    is_aigc: bool = True,
+    is_aigc: bool = False,
 ) -> dict[str, Any]:
     """
     Direct post init with PULL_FROM_URL. Requires video.publish scope and verified media URL domain.

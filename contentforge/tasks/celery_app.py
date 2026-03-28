@@ -32,6 +32,7 @@ _GENERATION_TASK_NAMES = frozenset(
         "tasks.generate_content.run_full_generation",
         "tasks.generate_content.run_quote_only",
         "tasks.generate_content.run_image_only",
+        "tasks.generate_content.run_blog_generation",
     }
 )
 

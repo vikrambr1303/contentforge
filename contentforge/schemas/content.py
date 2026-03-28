@@ -6,14 +6,18 @@ from pydantic import BaseModel, Field
 class ContentItemUpdate(BaseModel):
     quote_text: str | None = None
     quote_author: str | None = None
+    blog_markdown: str | None = None
     status: str | None = Field(None, max_length=20)
 
 
 class ContentItemOut(BaseModel):
     id: int
     topic_id: int
+    kind: str = "social"
     quote_text: str | None
     quote_author: str | None
+    blog_markdown: str | None = None
+    blog_assets_json: list | None = None
     image_path: str | None
     video_path: str | None
     background_path: str | None

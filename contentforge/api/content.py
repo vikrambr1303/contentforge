@@ -1,4 +1,5 @@
 import io
+import shutil
 import zipfile
 from pathlib import Path
 
@@ -31,6 +32,7 @@ def _safe_path(rel: str | None) -> Path | None:
 def list_content(
     topic_id: int | None = None,
     status: str | None = None,
+    kind: str | None = None,
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
@@ -40,6 +42,8 @@ def list_content(
         q = q.where(ContentItem.topic_id == topic_id)
     if status:
         q = q.where(ContentItem.status == status)
+    if kind:
+        q = q.where(ContentItem.kind == kind)
     offset = (page - 1) * limit
     q = q.offset(offset).limit(limit)
     return list(db.scalars(q).all())
@@ -59,7 +63,10 @@ def patch_content(item_id: int, body: ContentItemUpdate, db: Session = Depends(g
     if not row:
         raise HTTPException(404)
     data = body.model_dump(exclude_unset=True)
-    if "quote_text" in data or "quote_author" in data:
+    if row.kind == "blog":
+        for k, v in data.items():
+            setattr(row, k, v)
+    elif "quote_text" in data or "quote_author" in data:
         for k, v in data.items():
             if k != "status":
                 setattr(row, k, v)
@@ -84,6 +91,9 @@ def delete_content(item_id: int, db: Session = Depends(get_db)) -> None:
         p = _safe_path(rel)
         if p and p.is_file():
             p.unlink()
+    blog_dir = Path(get_settings().data_dir).resolve() / "blog" / str(item_id)
+    if blog_dir.is_dir():
+        shutil.rmtree(blog_dir, ignore_errors=True)
     db.delete(row)
     db.commit()
 
@@ -138,6 +148,41 @@ def download_video(item_id: int, db: Session = Depends(get_db)) -> FileResponse:
     return FileResponse(p, media_type="video/mp4", filename=name, content_disposition_type="attachment")
 
 
+@router.get("/{item_id}/blog/diagram/{diagram_index}")
+def serve_blog_diagram(item_id: int, diagram_index: int, db: Session = Depends(get_db)) -> FileResponse:
+    row = db.get(ContentItem, item_id)
+    if not row or row.kind != "blog" or diagram_index < 0:
+        raise HTTPException(404)
+    rel = f"blog/{item_id}/diagram_{diagram_index}.png"
+    p = _safe_path(rel)
+    if not p or not p.is_file():
+        raise HTTPException(404)
+    return FileResponse(p, media_type="image/png")
+
+
+@router.get("/{item_id}/download/blog")
+def download_blog_bundle(item_id: int, db: Session = Depends(get_db)) -> StreamingResponse:
+    row = db.get(ContentItem, item_id)
+    if not row or row.kind != "blog" or not row.blog_markdown:
+        raise HTTPException(404)
+    topic = db.get(Topic, row.topic_id)
+    slug = topic.slug if topic else "content"
+    prefix = f"{slug}_{row.created_at.date()}_{item_id}"
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(f"{prefix}/post.md", row.blog_markdown.encode("utf-8"))
+        for rel in row.blog_assets_json or []:
+            p = _safe_path(rel)
+            if p and p.is_file():
+                zf.write(p, f"{prefix}/{p.name}")
+    buf.seek(0)
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{prefix}_blog.zip"'},
+    )
+
+
 @router.post("/download/batch")
 def download_batch(body: BatchDownloadRequest, db: Session = Depends(get_db)) -> StreamingResponse:
     buf = io.BytesIO()
@@ -149,6 +194,14 @@ def download_batch(body: BatchDownloadRequest, db: Session = Depends(get_db)) ->
             topic = db.get(Topic, item.topic_id)
             slug = topic.slug if topic else "content"
             date = str(item.created_at.date())
+            if getattr(item, "kind", "social") == "blog" and item.blog_markdown:
+                bp = f"{slug}_{date}_{item.id}_blog"
+                zf.writestr(f"{bp}/post.md", item.blog_markdown.encode("utf-8"))
+                for rel in item.blog_assets_json or []:
+                    p = _safe_path(rel)
+                    if p and p.is_file():
+                        zf.write(p, f"{bp}/{p.name}")
+                continue
             if item.image_path:
                 p = _safe_path(item.image_path)
                 if p and p.is_file():

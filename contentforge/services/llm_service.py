@@ -25,6 +25,13 @@ _OLLAMA_ENRICH_OPTIONS: dict[str, Any] = {
     "repeat_penalty": 1.08,
 }
 
+# Long-form blog: a bit warmer and more varied than enrich JSON, still coherent.
+_OLLAMA_BLOG_OPTIONS: dict[str, Any] = {
+    "temperature": 0.86,
+    "top_p": 0.93,
+    "repeat_penalty": 1.14,
+}
+
 
 def _extract_json(text: str) -> dict[str, Any]:
     text = text.strip()
@@ -324,6 +331,68 @@ Return JSON only: {{"q": "word1 word2 word3"}}"""
     tail = " ".join(tail.split())[:50]
     out = f"{base} {tail}".strip()
     return out[:120] if out else "moody nature abstract sky"
+
+
+def generate_blog_post_sync(topic: Topic, model: str) -> str:
+    """
+    Produce a Medium-friendly Markdown article with optional ```mermaid``` blocks.
+    Output is plain markdown only (no JSON wrapper).
+    """
+    settings = get_settings()
+    nonce = secrets.token_hex(4)
+    user_prompt = f"""
+Write a blog post in Markdown for people who care about: {topic.name}
+
+Context from the editor: {topic.description or "(none)"}
+Adopt this voice as much as it fits: {topic.style}
+
+Request id: {nonce} — avoid generic “SEO sludge”; sound like one careful human wrote it for peers, not a brochure.
+
+Voice and rhythm (critical):
+- Mix short punchy sentences with longer explanatory ones. Vary paragraph length; some sections can be one or two sentences only.
+- Prefer concrete scenarios, numbers, or “for example …” over abstract slogans. It’s fine to acknowledge tradeoffs or “when this breaks down.”
+- Use **bold** sparingly for real emphasis, not every other phrase. Bullets only where they actually help (steps, options), not for every paragraph.
+- You may address the reader as “you” occasionally, or pose a real question—don’t stay in passive corporate voice.
+- Light opinion is OK (“I tend to …”, “In practice …”) without claiming a fake personal biography.
+
+Phrases and patterns to AVOID (they read as machine-default):
+“In today’s fast-paced world”, “In conclusion”, “It’s important to note”, “Let’s dive in”, “game-changer”, “unlock”, “leverage”, “synergy”, “holistic”, “at the end of the day”, “robust ecosystem”, numbered “Firstly / Secondly / Lastly” chains, and starting every section with “In this section we will …”.
+
+Structure:
+- Output ONLY the article as Markdown. No preamble. No markdown wrapper fence around the whole post.
+- First line: a single H1 title that sounds like a human headline, not a keyword stack.
+- Use ## and ###; let section titles be specific (not “Introduction” / “Overview” unless unavoidable).
+- Roughly 900–2000 words unless the topic is very narrow.
+
+Diagrams (required):
+- At least 2 separate ```mermaid``` blocks with valid Mermaid (e.g. flowchart TD, sequenceDiagram, graph LR). Keep each under ~25 nodes/lines.
+- After each diagram, a short paragraph in plain language—conversational, not a caption robot.
+
+Technical: no HTML. Links as markdown [text](url) or (#). No meta-commentary about how the post was written.
+
+Start with the # title line only.
+"""
+    payload = {
+        "model": model,
+        "prompt": user_prompt,
+        "system": (
+            "You are an experienced technical writer and blogger. You write in Markdown only. "
+            "Your prose is natural, specific, and slightly informal when the topic allows—never stiff, "
+            "never filler, never obviously templated. You follow the user’s structural rules (headings, "
+            "mermaid diagrams) exactly."
+        ),
+        "stream": False,
+        "options": _OLLAMA_BLOG_OPTIONS,
+    }
+    with httpx.Client(timeout=httpx.Timeout(connect=15.0, read=300.0, write=60.0, pool=10.0)) as client:
+        r = client.post(f"{settings.ollama_base_url.rstrip('/')}/api/generate", json=payload)
+        r.raise_for_status()
+        data = r.json()
+    raw = (data.get("response") or "").strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:markdown|md)?\s*\n", "", raw)
+        raw = re.sub(r"\n```\s*$", "", raw)
+    return raw.strip()
 
 
 async def list_ollama_models() -> list[dict[str, Any]]:

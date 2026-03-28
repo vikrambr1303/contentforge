@@ -13,7 +13,7 @@ from plugins.registry import load_plugins
 async def lifespan(_app: FastAPI):
     load_plugins()
     root = Path(get_settings().data_dir)
-    for sub in ("images", "videos", "backgrounds", "topic_refs"):
+    for sub in ("images", "videos", "backgrounds", "topic_refs", "blog"):
         (root / sub).mkdir(parents=True, exist_ok=True)
     yield
 

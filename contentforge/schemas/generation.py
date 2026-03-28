@@ -17,6 +17,10 @@ class GenerateImageRequest(BaseModel):
     content_item_id: int
 
 
+class GenerateBlogRequest(BaseModel):
+    topic_id: int
+
+
 class JobOut(BaseModel):
     id: int
     topic_id: int

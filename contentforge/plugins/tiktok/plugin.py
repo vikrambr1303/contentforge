@@ -40,8 +40,8 @@ class Plugin(SocialMediaPlugin):
                 "mark_as_ai_generated": {
                     "type": "boolean",
                     "title": "Label as AI-generated (is_aigc)",
-                    "description": "Recommended when content used LLM / generated imagery.",
-                    "default": True,
+                    "description": "When enabled, TikTok’s API receives is_aigc=true. Leave off if you do not want the AI-generated label on posts (follow TikTok and applicable rules for your content).",
+                    "default": False,
                 },
             },
         }
@@ -93,7 +93,7 @@ class Plugin(SocialMediaPlugin):
 
         is_aigc = credentials.get("mark_as_ai_generated")
         if is_aigc is None:
-            is_aigc = True
+            is_aigc = False
 
         try:
             data = client.init_direct_video_publish(

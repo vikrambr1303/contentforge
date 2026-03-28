@@ -11,7 +11,7 @@ from models.app_settings import AppSettings
 from models.content import ContentItem
 from models.generation_job import GenerationJob
 from models.topic import Topic
-from services import image_service, llm_service, video_service
+from services import blog_service, image_service, llm_service, video_service
 from tasks.celery_app import app
 
 logger = logging.getLogger(__name__)
@@ -599,6 +599,134 @@ def run_image_only(self, job_id: int) -> dict:
                 last_exc = e
                 logger.warning(
                     "run_image_only job_id=%s failed attempt %s/%s: %s",
+                    job_id,
+                    attempt + 1,
+                    total,
+                    e,
+                )
+                if attempt >= retry_limit:
+                    db.rollback()
+                    _fail_job_final(db, job_id, str(e))
+                    raise
+                db.rollback()
+                _mark_job_retrying(db, job_id, attempt + 2, total)
+        if last_exc:
+            raise last_exc
+        return {"ok": False}
+    finally:
+        db.close()
+
+
+def _run_blog_generation_once(
+    self,
+    db: Session,
+    job_id: int,
+    attempt_index: int,
+    total_attempts: int,
+) -> dict:
+    job = db.get(GenerationJob, job_id)
+    if not job:
+        return {"ok": False}
+
+    if attempt_index == 0:
+        job.status = "running"
+        job.celery_task_id = self.request.id
+        job.progress_percent = max(job.progress_percent, 5)
+        job.stage = "Starting blog job"
+        db.commit()
+    else:
+        job.stage = f"Retry {attempt_index + 1}/{total_attempts}"
+        db.commit()
+
+    topic = db.get(Topic, job.topic_id)
+    item = db.get(ContentItem, job.content_item_id) if job.content_item_id else None
+    if not topic or topic.deleted_at is not None or not item or item.kind != "blog":
+        job.status = "failed"
+        job.error_message = "Missing topic or blog content item"
+        job.stage = "Failed"
+        job.completed_at = datetime.now(timezone.utc)
+        db.commit()
+        return {"ok": False}
+
+    app_s = _settings_row(db)
+    model = app_s.ollama_model
+
+    job.progress_percent = max(job.progress_percent, 12)
+    job.stage = "Writing article (LLM)"
+    db.commit()
+
+    md_raw = llm_service.generate_blog_post_sync(topic, model)
+    if not md_raw or len(md_raw) < 80:
+        job.status = "failed"
+        job.error_message = "Model returned empty or very short markdown"
+        job.stage = "Failed"
+        job.completed_at = datetime.now(timezone.utc)
+        db.commit()
+        return {"ok": False}
+
+    job.progress_percent = max(job.progress_percent, 55)
+    job.stage = "Rendering Mermaid diagrams"
+    db.commit()
+
+    data_root = Path(get_settings().data_dir)
+    final_md, rels = blog_service.process_blog_markdown(
+        item_id=item.id,
+        raw_markdown=md_raw,
+        data_root=data_root,
+    )
+
+    item.blog_markdown = final_md
+    item.blog_assets_json = rels or None
+    item.generation_model = model
+    item.status = "draft"
+
+    job.status = "done"
+    job.progress_percent = 100
+    job.stage = "Complete"
+    job.completed_at = datetime.now(timezone.utc)
+    db.commit()
+    return {"ok": True}
+
+
+@app.task(
+    bind=True,
+    name="tasks.generate_content.run_blog_generation",
+    soft_time_limit=1200,
+    time_limit=1260,
+)
+def run_blog_generation(self, job_id: int) -> dict:
+    db = SessionLocal()
+    try:
+        job = db.get(GenerationJob, job_id)
+        if not job:
+            return {"ok": False}
+
+        app_s = _settings_row(db)
+        retry_limit = _generation_retry_limit(app_s)
+        total = retry_limit + 1
+        last_exc: BaseException | None = None
+
+        for attempt in range(total):
+            try:
+                if attempt > 0:
+                    db.rollback()
+                return _run_blog_generation_once(self, db, job_id, attempt, total)
+            except SoftTimeLimitExceeded:
+                db.rollback()
+                job = db.get(GenerationJob, job_id)
+                if job:
+                    job.status = "failed"
+                    job.error_message = (
+                        "Blog generation timed out. Try a smaller topic or a faster model."
+                    )[:2000]
+                    job.stage = "Failed"
+                    job.completed_at = datetime.now(timezone.utc)
+                    db.commit()
+                raise
+            except Exception as e:  # noqa: BLE001
+                last_exc = e
+                logger.warning(
+                    "run_blog_generation job_id=%s failed attempt %s/%s: %s",
                     job_id,
                     attempt + 1,
                     total,
