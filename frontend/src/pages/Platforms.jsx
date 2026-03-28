@@ -12,6 +12,8 @@ export default function Platforms() {
     display_name: "",
     access_token: "",
     instagram_user_id: "",
+    privacy_level: "SELF_ONLY",
+    mark_as_ai_generated: true,
   });
 
   function refresh() {
@@ -26,17 +28,30 @@ export default function Platforms() {
 
   function submit(e) {
     e.preventDefault();
+    const credentials =
+      form.platform === "tiktok"
+        ? {
+            access_token: form.access_token,
+            privacy_level: form.privacy_level,
+            mark_as_ai_generated: form.mark_as_ai_generated,
+          }
+        : {
+            access_token: form.access_token,
+            instagram_user_id: form.instagram_user_id,
+          };
     api.platforms
       .addAccount({
         platform: form.platform,
         display_name: form.display_name,
-        credentials: {
-          access_token: form.access_token,
-          instagram_user_id: form.instagram_user_id,
-        },
+        credentials,
       })
       .then(() => {
-        setForm({ ...form, display_name: "", access_token: "", instagram_user_id: "" });
+        setForm({
+          ...form,
+          display_name: "",
+          access_token: "",
+          instagram_user_id: "",
+        });
         refresh();
       })
       .catch((err) => alert(err.response?.data?.detail || err.message));
@@ -58,6 +73,17 @@ export default function Platforms() {
       <form onSubmit={submit} className="cf-card p-5 sm:p-6 space-y-4 max-w-lg">
         <h2 className="text-lg font-semibold text-white">Add account</h2>
         <label className="block">
+          <span className="cf-label mb-1.5">Platform</span>
+          <select
+            className="cf-select"
+            value={form.platform}
+            onChange={(e) => setForm({ ...form, platform: e.target.value })}
+          >
+            <option value="instagram">Instagram</option>
+            <option value="tiktok">TikTok</option>
+          </select>
+        </label>
+        <label className="block">
           <span className="cf-label mb-1.5">Display name</span>
           <input
             className="cf-input"
@@ -67,23 +93,64 @@ export default function Platforms() {
           />
         </label>
         <label className="block">
-          <span className="cf-label mb-1.5">Long-lived access token</span>
+          <span className="cf-label mb-1.5">
+            {form.platform === "tiktok" ? "User access token (OAuth)" : "Long-lived access token"}
+          </span>
           <input
             className="cf-input"
+            type="password"
+            autoComplete="off"
             value={form.access_token}
             onChange={(e) => setForm({ ...form, access_token: e.target.value })}
             required
           />
         </label>
-        <label className="block">
-          <span className="cf-label mb-1.5">Instagram Business Account ID</span>
-          <input
-            className="cf-input"
-            value={form.instagram_user_id}
-            onChange={(e) => setForm({ ...form, instagram_user_id: e.target.value })}
-            required
-          />
-        </label>
+        {form.platform === "instagram" ? (
+          <label className="block">
+            <span className="cf-label mb-1.5">Instagram Business Account ID</span>
+            <input
+              className="cf-input"
+              value={form.instagram_user_id}
+              onChange={(e) => setForm({ ...form, instagram_user_id: e.target.value })}
+              required
+            />
+          </label>
+        ) : (
+          <>
+            <label className="block">
+              <span className="cf-label mb-1.5">Privacy level</span>
+              <select
+                className="cf-select"
+                value={form.privacy_level}
+                onChange={(e) => setForm({ ...form, privacy_level: e.target.value })}
+              >
+                <option value="PUBLIC_TO_EVERYONE">PUBLIC_TO_EVERYONE</option>
+                <option value="MUTUAL_FOLLOW_FRIENDS">MUTUAL_FOLLOW_FRIENDS</option>
+                <option value="FOLLOWER_OF_CREATOR">FOLLOWER_OF_CREATOR</option>
+                <option value="SELF_ONLY">SELF_ONLY (common for unaudited apps)</option>
+              </select>
+              <p className="text-xs text-slate-500 mt-1.5 leading-relaxed">
+                Must match an option from TikTok&apos;s{" "}
+                <code className="text-slate-400">POST /v2/post/publish/creator_info/query/</code> for this account
+                (validation uses this when saving).
+              </p>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={form.mark_as_ai_generated}
+                onChange={(e) => setForm({ ...form, mark_as_ai_generated: e.target.checked })}
+                className="rounded border-forge-600 bg-forge-900 text-sky-500"
+              />
+              <span className="text-sm text-slate-300">Mark posts as AI-generated (is_aigc)</span>
+            </label>
+            <p className="text-xs text-slate-500 leading-relaxed">
+              TikTok only accepts <strong className="text-slate-400">video</strong>. Use content with an MP4 and set{" "}
+              <code className="text-slate-400">PUBLIC_BASE_URL</code> to HTTPS; verify the same URL prefix in the TikTok
+              developer portal for <code className="text-slate-400">PULL_FROM_URL</code>.
+            </p>
+          </>
+        )}
         <button type="submit" className="cf-btn-primary">
           Save & validate
         </button>

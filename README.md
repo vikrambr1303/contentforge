@@ -253,6 +253,14 @@ If you run `npm run dev` on the host, point the Vite proxy at a reachable backen
 - **Unsplash** — Respect [Unsplash API guidelines](https://help.unsplash.com/en/articles/2511315-guideline-attribution) and photographer attribution for public posts.
 - **Plugins** — `contentforge/plugins/` is loaded at startup (`load_plugins()`); posting behavior is extensible per platform.
 
+### TikTok
+
+- **Plugin** — `plugins/tiktok/`: [Direct Post](https://developers.tiktok.com/doc/content-posting-api-reference-direct-post) with **`PULL_FROM_URL`** (TikTok fetches your MP4 from a public URL).
+- **Video only** — Image-only items cannot be posted to TikTok; generate with **Include video** or extend the plugin for [photo posting](https://developers.tiktok.com/doc/content-posting-api-reference-photo-post) later.
+- **OAuth** — Create a TikTok developer app, implement login to obtain a **user access token** with scopes such as **`video.publish`**, **`user.info.basic`** (validation), and follow TikTok’s product/audit rules (unaudited clients may be limited, e.g. private-only posting).
+- **`PUBLIC_BASE_URL`** — Must be **HTTPS** and reachable by TikTok’s servers. Register and **verify the URL prefix / domain** in the developer portal ([media transfer guide](https://developers.tiktok.com/doc/content-posting-api-media-transfer-guide)); otherwise `PULL_FROM_URL` returns `url_ownership_unverified`.
+- **Privacy** — The Platforms form asks for a **privacy level**; saving an account checks it against **`/v2/post/publish/creator_info/query/`** so it matches the creator’s allowed options.
+
 ---
 
 ## Optional GPU stack
