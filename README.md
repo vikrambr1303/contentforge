@@ -269,4 +269,4 @@ docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
 
 ## License
 
-If you add a license file, reference it here. Until then, treat the repo as private/unlicensed unless stated otherwise by the author.
+This project is licensed under the [MIT License](LICENSE).

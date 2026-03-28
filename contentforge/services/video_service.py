@@ -1,5 +1,11 @@
 from pathlib import Path
 
+from PIL import Image as PILImage
+
+# MoviePy 1.0.x passes Image.ANTIALIAS to PIL; Pillow 10+ removed it (use LANCZOS).
+if not hasattr(PILImage, "ANTIALIAS"):
+    PILImage.ANTIALIAS = PILImage.Resampling.LANCZOS
+
 from moviepy.editor import ImageClip
 
 
