@@ -27,7 +27,11 @@ class Plugin(SocialMediaPlugin):
             "required": ["access_token", "instagram_user_id"],
             "properties": {
                 "access_token": {"type": "string", "title": "Long-lived Access Token"},
-                "instagram_user_id": {"type": "string", "title": "Instagram Business Account ID"},
+                "instagram_user_id": {
+                    "type": "string",
+                    "title": "Instagram User ID (Professional account)",
+                    "description": "The IG user id for a Professional Instagram account (Business or Creator) linked to a Facebook Page — same Graph API id Meta calls 'Instagram Business Account id' in some docs.",
+                },
             },
         }
 

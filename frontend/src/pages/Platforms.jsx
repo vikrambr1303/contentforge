@@ -107,13 +107,20 @@ export default function Platforms() {
         </label>
         {form.platform === "instagram" ? (
           <label className="block">
-            <span className="cf-label mb-1.5">Instagram Business Account ID</span>
+            <span className="cf-label mb-1.5">Instagram User ID (Professional)</span>
             <input
               className="cf-input"
               value={form.instagram_user_id}
               onChange={(e) => setForm({ ...form, instagram_user_id: e.target.value })}
               required
             />
+            <p className="text-xs text-slate-500 mt-1.5 leading-relaxed">
+              Graph API user id for a <strong className="text-slate-400">Professional</strong> Instagram —{" "}
+              <strong className="text-slate-400">Creator</strong> or <strong className="text-slate-400">Business</strong>{" "}
+              (Instagram → Settings → Account → Switch to professional account). It must be linked to a{" "}
+              <strong className="text-slate-400">Facebook Page</strong>; Meta’s Instagram Graph API treats both account
+              types the same for posting.
+            </p>
           </label>
         ) : (
           <>
