@@ -49,7 +49,7 @@ class Plugin(SocialMediaPlugin):
             return PostResult(
                 False,
                 None,
-                "Set PUBLIC_BASE_URL in .env to a public HTTPS URL (e.g. ngrok) so Meta can fetch media.",
+                "Set PUBLIC_BASE_URL or NGROK_LOCAL_API_URL in .env so Meta can fetch media over HTTPS.",
             )
         img_url = url if image else None
         vid_url = url if not image else None

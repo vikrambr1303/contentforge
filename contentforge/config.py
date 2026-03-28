@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     celery_broker_url: str = "redis://localhost:6379/0"
     celery_result_backend: str = "redis://localhost:6379/0"
     public_base_url: str = ""
+    # If set and PUBLIC_BASE_URL is empty, discover base URL from ngrok agent API (e.g. http://ngrok:4040).
+    ngrok_local_api_url: str = ""
 
     cors_origins: list[str] = [
         "http://127.0.0.1:5173",

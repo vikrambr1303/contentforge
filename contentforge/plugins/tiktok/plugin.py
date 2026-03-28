@@ -87,7 +87,7 @@ class Plugin(SocialMediaPlugin):
             return PostResult(
                 False,
                 None,
-                "Set PUBLIC_BASE_URL in .env to a public HTTPS URL and verify that URL prefix in TikTok Developer Portal "
+                "Set PUBLIC_BASE_URL or NGROK_LOCAL_API_URL, verify the URL prefix in TikTok Developer Portal "
                 "so TikTok can pull the MP4 (PULL_FROM_URL).",
             )
 

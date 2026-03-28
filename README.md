@@ -118,7 +118,10 @@ Loaded from `.env` into **backend** and **worker** (`env_file` in Compose). Name
 | `DATA_DIR` | Filesystem root for media; default `/app/data` in containers. |
 | `OLLAMA_BASE_URL` | e.g. `http://ollama:11434` in Compose. |
 | `CELERY_BROKER_URL` / `CELERY_RESULT_BACKEND` | Redis URLs. |
-| `PUBLIC_BASE_URL` | Optional; used when a platform needs to fetch public media URLs. |
+| `PUBLIC_BASE_URL` | Optional fixed public HTTPS origin for media URLs (Instagram, TikTok). |
+| `NGROK_LOCAL_API_URL` | Optional; if `PUBLIC_BASE_URL` is empty, the app queries this ngrok agent URL (`…/api/tunnels`) when building media URLs. Compose: `http://ngrok:4040`. Host ngrok: `http://host.docker.internal:4040`. |
+| `NGROK_AUTHTOKEN` | Required for the optional `ngrok` Compose service (`--profile ngrok`). |
+| `NGROK_DOMAIN` | Your **reserved** ngrok hostname (e.g. `myapp.ngrok-free.app`). Passed to `ngrok http --domain=…` so the public URL is stable. |
 | `UNSPLASH_ACCESS_KEY` | Required if **Settings → Background source** is **Unsplash**. |
 | `SD_INFERENCE_STEPS_GPU` | More steps on CUDA (worker). |
 | `FORCE_SD_CPU` | Force CPU even if GPU visible (debug). |
@@ -237,6 +240,27 @@ All JSON routers are mounted under **`/api`** (see `main.py`):
 | `/api/platforms`, `/api/accounts`, `/api/post`, `/api/post-history` | Social integrations. |
 
 Unauthenticated in default dev layout; tighten before production.
+
+---
+
+## Ngrok (stable URL for Instagram / TikTok)
+
+Meta and TikTok fetch your media from a **public HTTPS** URL. Use a **reserved ngrok domain** so that URL stays the same across restarts (simpler TikTok URL-prefix verification and fewer moving parts).
+
+1. In the [ngrok dashboard](https://dashboard.ngrok.com/), create a **static domain** (free tier includes a `*.ngrok-free.app` name) and copy your authtoken.
+2. In `.env` set **`NGROK_AUTHTOKEN`**, **`NGROK_DOMAIN`** (e.g. `myapp.ngrok-free.app`), and **`NGROK_LOCAL_API_URL=http://ngrok:4040`**.
+3. Start the tunnel with the Compose profile (the service runs `ngrok http --domain=$NGROK_DOMAIN backend:8000`):
+
+   ```bash
+   docker compose --profile ngrok up -d
+   ```
+
+**Resolving the URL in the app**
+
+- **Recommended:** Leave **`PUBLIC_BASE_URL`** empty and set **`NGROK_LOCAL_API_URL`**. On each post, the API/worker calls **`GET …/api/tunnels`** and uses your static **`https://…`** tunnel URL (always the same hostname while **`NGROK_DOMAIN`** is unchanged).
+- **Alternative:** Set **`PUBLIC_BASE_URL=https://myapp.ngrok-free.app`** to match your reserved domain and skip tunnel discovery (no **`NGROK_LOCAL_API_URL`** needed for URL building).
+
+If ngrok runs on the **host** instead of Compose, point **`NGROK_LOCAL_API_URL`** at **`http://host.docker.internal:4040`** and start ngrok with the same **`--domain`** flag toward port `8000`.
 
 ---
 

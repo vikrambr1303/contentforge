@@ -146,8 +146,8 @@ export default function Platforms() {
             </label>
             <p className="text-xs text-slate-500 leading-relaxed">
               TikTok only accepts <strong className="text-slate-400">video</strong>. Use content with an MP4 and set{" "}
-              <code className="text-slate-400">PUBLIC_BASE_URL</code> to HTTPS; verify the same URL prefix in the TikTok
-              developer portal for <code className="text-slate-400">PULL_FROM_URL</code>.
+              <code className="text-slate-400">PUBLIC_BASE_URL</code> or <code className="text-slate-400">NGROK_LOCAL_API_URL</code>{" "}
+              for HTTPS; verify the URL prefix in the TikTok developer portal for <code className="text-slate-400">PULL_FROM_URL</code>.
             </p>
           </>
         )}

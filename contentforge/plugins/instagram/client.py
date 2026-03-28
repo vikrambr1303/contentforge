@@ -2,7 +2,7 @@ from typing import Any
 
 import httpx
 
-from config import get_settings
+from utils.public_url import get_public_base_url
 
 
 def validate_token(access_token: str) -> bool:
@@ -53,8 +53,7 @@ def publish_media(instagram_user_id: str, access_token: str, creation_id: str) -
 
 
 def public_url_for_content(content_item_id: int, image: bool) -> str:
-    settings = get_settings()
-    base = settings.public_base_url.rstrip("/")
+    base = get_public_base_url()
     if not base:
         return ""
     kind = "image" if image else "video"

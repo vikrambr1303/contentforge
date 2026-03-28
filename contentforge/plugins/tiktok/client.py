@@ -2,7 +2,7 @@ from typing import Any
 
 import httpx
 
-from config import get_settings
+from utils.public_url import get_public_base_url
 
 TIKTOK_API = "https://open.tiktokapis.com"
 
@@ -56,8 +56,7 @@ def validate_token(access_token: str) -> bool:
 
 
 def public_video_url_for_content(content_item_id: int) -> str:
-    settings = get_settings()
-    base = settings.public_base_url.rstrip("/")
+    base = get_public_base_url()
     if not base:
         return ""
     return f"{base}/api/content/{content_item_id}/video"

@@ -79,6 +79,21 @@ services:
     depends_on:
       - backend
 
+  # Optional: HTTPS tunnel to backend for Instagram/TikTok media URLs.
+  # Use a reserved ngrok domain (dashboard → Domains) so the URL stays stable for TikTok/Meta verification.
+  # Start: docker compose --profile ngrok up -d
+  # .env: NGROK_AUTHTOKEN, NGROK_DOMAIN (e.g. myapp.ngrok-free.app), NGROK_LOCAL_API_URL=http://ngrok:4040
+  ngrok:
+    image: ngrok/ngrok:latest
+    profiles:
+      - ngrok
+    restart: unless-stopped
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN:-}
+    command: ["http", "--domain=${NGROK_DOMAIN}", "backend:8000"]
+    depends_on:
+      - backend
+
 volumes:
   mysql_data:
   ollama_data:
