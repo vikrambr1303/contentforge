@@ -1,4 +1,6 @@
+import { useEffect } from "react";
 import { NavLink, Route, Routes } from "react-router-dom";
+import { connectGenerationRealtime } from "./realtime.js";
 import ContentLibrary from "./pages/ContentLibrary.jsx";
 import Dashboard from "./pages/Dashboard.jsx";
 import Generate from "./pages/Generate.jsx";
@@ -53,6 +55,8 @@ function Layout({ children }) {
 }
 
 export default function App() {
+  useEffect(() => connectGenerationRealtime(), []);
+
   return (
     <Layout>
       <Routes>

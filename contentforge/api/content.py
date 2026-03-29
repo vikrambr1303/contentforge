@@ -11,11 +11,22 @@ from sqlalchemy.orm import Session
 from api.deps import get_db
 from config import get_settings
 from models.content import ContentItem
+from models.generation_job import GenerationJob
 from models.topic import Topic
-from schemas.content import BatchDownloadRequest, ContentItemOut, ContentItemUpdate
-from services import image_service
+from schemas.content import (
+    BatchDownloadRequest,
+    BlogSectionInfo,
+    ContentItemOut,
+    ContentItemUpdate,
+    ReviseContentRequest,
+)
+from services import blog_service, image_service
+from tasks.generate_content import run_revise_blog, run_revise_social
 
 router = APIRouter(prefix="/content", tags=["content"])
+
+# Same URL is reused when files are overwritten (revise/regenerate); avoid stale browser cache.
+_DYNAMIC_MEDIA_HEADERS = {"Cache-Control": "private, no-store, must-revalidate"}
 
 
 def _safe_path(rel: str | None) -> Path | None:
@@ -42,11 +53,92 @@ def list_content(
         q = q.where(ContentItem.topic_id == topic_id)
     if status:
         q = q.where(ContentItem.status == status)
+    else:
+        # Hide in-flight and failed generations unless a status filter is chosen explicitly.
+        q = q.where(ContentItem.status.notin_(("generating", "failed")))
     if kind:
         q = q.where(ContentItem.kind == kind)
     offset = (page - 1) * limit
     q = q.offset(offset).limit(limit)
     return list(db.scalars(q).all())
+
+
+def _active_job_on_item(db: Session, content_item_id: int) -> bool:
+    q = (
+        select(GenerationJob)
+        .where(
+            GenerationJob.content_item_id == content_item_id,
+            GenerationJob.status.in_(("queued", "running")),
+        )
+        .limit(1)
+    )
+    return db.scalars(q).first() is not None
+
+
+@router.get("/{item_id}/blog/sections", response_model=list[BlogSectionInfo])
+def blog_section_list(item_id: int, db: Session = Depends(get_db)) -> list[BlogSectionInfo]:
+    row = db.get(ContentItem, item_id)
+    if not row or row.kind != "blog":
+        raise HTTPException(404, "Not a blog content item")
+    infos = blog_service.section_infos_for_api(row.blog_markdown or "")
+    return [BlogSectionInfo.model_validate(x) for x in infos]
+
+
+@router.post("/{item_id}/revise")
+def revise_content(item_id: int, body: ReviseContentRequest, db: Session = Depends(get_db)) -> dict:
+    row = db.get(ContentItem, item_id)
+    if not row:
+        raise HTTPException(404)
+    if _active_job_on_item(db, item_id):
+        raise HTTPException(409, "A job is already queued or running for this item")
+    if body.mode == "feedback" and not (body.feedback or "").strip():
+        raise HTTPException(400, "feedback is required when mode is feedback")
+    if body.background_only:
+        if row.kind != "social":
+            raise HTTPException(400, "background_only applies only to social content")
+        if body.mode != "feedback":
+            raise HTTPException(400, "background_only requires mode feedback")
+
+    payload: dict[str, str | int | bool] = {
+        "mode": body.mode,
+        "feedback": (body.feedback or "").strip(),
+    }
+    if row.kind == "social" and body.background_only:
+        payload["background_only"] = True
+
+    if row.kind == "blog":
+        md = row.blog_markdown or ""
+        sections = blog_service.split_h2_sections(md)
+        if body.blog_section_index is None:
+            raise HTTPException(400, "blog_section_index is required for blog items")
+        idx = body.blog_section_index
+        if idx < 0 or idx >= len(sections):
+            raise HTTPException(400, "blog_section_index out of range")
+        payload["blog_section_index"] = idx
+        job_type = "revise_blog"
+        delay_fn = run_revise_blog.delay
+    elif row.kind == "social":
+        if body.blog_section_index is not None:
+            raise HTTPException(400, "blog_section_index is only for blog items")
+        job_type = "revise_social"
+        delay_fn = run_revise_social.delay
+    else:
+        raise HTTPException(400, "Unsupported content kind")
+
+    job = GenerationJob(
+        topic_id=row.topic_id,
+        content_item_id=row.id,
+        job_type=job_type,
+        status="queued",
+        payload_json=payload,
+    )
+    db.add(job)
+    db.flush()
+    job_id = job.id
+    # Commit before Celery so the worker always sees payload_json (avoids race with uncommitted row).
+    db.commit()
+    delay_fn(job_id)
+    return {"job_id": job_id}
 
 
 @router.get("/{item_id}", response_model=ContentItemOut)
@@ -106,7 +198,7 @@ def serve_image(item_id: int, db: Session = Depends(get_db)) -> FileResponse:
     p = _safe_path(row.image_path)
     if not p or not p.is_file():
         raise HTTPException(404)
-    return FileResponse(p, media_type="image/jpeg")
+    return FileResponse(p, media_type="image/jpeg", headers=_DYNAMIC_MEDIA_HEADERS)
 
 
 @router.get("/{item_id}/video")
@@ -117,7 +209,7 @@ def serve_video(item_id: int, db: Session = Depends(get_db)) -> FileResponse:
     p = _safe_path(row.video_path)
     if not p or not p.is_file():
         raise HTTPException(404)
-    return FileResponse(p, media_type="video/mp4")
+    return FileResponse(p, media_type="video/mp4", headers=_DYNAMIC_MEDIA_HEADERS)
 
 
 @router.get("/{item_id}/download/image")
@@ -157,7 +249,7 @@ def serve_blog_diagram(item_id: int, diagram_index: int, db: Session = Depends(g
     p = _safe_path(rel)
     if not p or not p.is_file():
         raise HTTPException(404)
-    return FileResponse(p, media_type="image/png")
+    return FileResponse(p, media_type="image/png", headers=_DYNAMIC_MEDIA_HEADERS)
 
 
 @router.get("/{item_id}/download/blog")

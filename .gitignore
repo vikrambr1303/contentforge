@@ -13,5 +13,6 @@ dist/
 *.log
 .idea/
 .vscode/
+.cursor/
 alembic.ini.bak
 coverage_html/

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import * as api from "../api/client.js";
+import RevisionModal from "./RevisionModal.jsx";
 
 function statusBadgeClass(status) {
   switch (status) {
@@ -63,6 +64,7 @@ export default function BlogContentCard({ item, topic, selected, onToggle, onRef
   const [deleting, setDeleting] = useState(false);
   const [copyDone, setCopyDone] = useState(false);
   const [readerOpen, setReaderOpen] = useState(false);
+  const [revisionOpen, setRevisionOpen] = useState(false);
 
   useEffect(() => {
     setBody(item.blog_markdown || "");
@@ -215,6 +217,17 @@ export default function BlogContentCard({ item, topic, selected, onToggle, onRef
               </button>
               <button
                 type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setRevisionOpen(true);
+                }}
+                className="cf-btn-secondary text-xs py-2 text-violet-200 border-violet-900/40 bg-violet-950/20 hover:bg-violet-950/35"
+                disabled={!hasBody}
+              >
+                Revise
+              </button>
+              <button
+                type="button"
                 onClick={copyMarkdown}
                 className="cf-btn-secondary text-xs py-2"
                 disabled={!hasBody}
@@ -252,6 +265,14 @@ export default function BlogContentCard({ item, topic, selected, onToggle, onRef
           <strong className="text-slate-400">Download ZIP</strong> for <code className="text-slate-400">post.md</code> plus PNGs.
         </p>
       </div>
+
+      <RevisionModal
+        open={revisionOpen}
+        onClose={() => setRevisionOpen(false)}
+        itemId={item.id}
+        kind="blog"
+        hasBlogBody={hasBody}
+      />
 
       {readerOpen &&
         typeof document !== "undefined" &&

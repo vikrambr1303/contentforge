@@ -17,7 +17,6 @@ def _get_or_create(db: Session) -> AppSettings:
             default_image_style="cinematic lighting, soft gradients",
             caption_cta="",
             generation_retry_limit=2,
-            background_source="diffusers",
         )
         db.add(row)
         db.commit()

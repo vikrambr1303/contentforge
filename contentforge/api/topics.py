@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 
+import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from PIL import Image
@@ -10,9 +11,11 @@ from sqlalchemy.orm import Session
 
 from api.deps import get_db
 from config import get_settings
+from models.app_settings import AppSettings
 from models.content import ContentItem
 from models.topic import Topic
-from schemas.topic import TopicCreate, TopicOut, TopicUpdate
+from schemas.topic import TopicCreate, TopicOut, TopicRefineRequest, TopicRefineResponse, TopicUpdate
+from services import llm_service
 from utils.slug import slugify
 
 router = APIRouter(prefix="/topics", tags=["topics"])
@@ -22,6 +25,30 @@ router = APIRouter(prefix="/topics", tags=["topics"])
 def list_topics(db: Session = Depends(get_db)) -> list[Topic]:
     q = select(Topic).where(Topic.deleted_at.is_(None)).order_by(Topic.id.desc())
     return list(db.scalars(q).all())
+
+
+@router.post("/refine-preview", response_model=TopicRefineResponse)
+def refine_topic_preview(body: TopicRefineRequest, db: Session = Depends(get_db)) -> TopicRefineResponse:
+    """LLM-assisted topic brief improvements; does not persist."""
+    row = db.get(AppSettings, 1)
+    if row is None:
+        raise HTTPException(503, "App settings not initialized")
+    model = (row.ollama_model or "llama3.2").strip()
+    try:
+        return llm_service.refine_topic_draft_sync(
+            name=body.name,
+            description=body.description,
+            style=body.style,
+            image_style=body.image_style,
+            background_source=body.background_source,
+            scopes=list(body.scopes),
+            user_note=body.user_note,
+            model=model,
+        )
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"Ollama request failed: {e}") from e
 
 
 @router.post("", response_model=TopicOut)
@@ -38,7 +65,7 @@ def create_topic(body: TopicCreate, db: Session = Depends(get_db)) -> Topic:
         description=body.description,
         style=body.style,
         image_style=body.image_style,
-        target_count=body.target_count,
+        background_source=body.background_source,
         is_active=body.is_active,
         reference_image_strength=body.reference_image_strength,
     )

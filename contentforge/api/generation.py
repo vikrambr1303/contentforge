@@ -24,7 +24,7 @@ def trigger_generate(body: GenerateBatchRequest, db: Session = Depends(get_db)) 
         raise HTTPException(404, "Topic not found")
     job_ids: list[int] = []
     for _ in range(body.count):
-        item = ContentItem(topic_id=body.topic_id, status="draft")
+        item = ContentItem(topic_id=body.topic_id, status="generating")
         db.add(item)
         db.flush()
         job = GenerationJob(
@@ -46,7 +46,7 @@ def trigger_quote(body: GenerateQuoteRequest, db: Session = Depends(get_db)) -> 
     topic = db.get(Topic, body.topic_id)
     if not topic or topic.deleted_at is not None:
         raise HTTPException(404, "Topic not found")
-    item = ContentItem(topic_id=body.topic_id, status="draft")
+    item = ContentItem(topic_id=body.topic_id, status="generating")
     db.add(item)
     db.flush()
     job = GenerationJob(
@@ -67,7 +67,7 @@ def trigger_blog(body: GenerateBlogRequest, db: Session = Depends(get_db)) -> di
     topic = db.get(Topic, body.topic_id)
     if not topic or topic.deleted_at is not None:
         raise HTTPException(404, "Topic not found")
-    item = ContentItem(topic_id=body.topic_id, kind="blog", status="draft")
+    item = ContentItem(topic_id=body.topic_id, kind="blog", status="generating")
     db.add(item)
     db.flush()
     job = GenerationJob(

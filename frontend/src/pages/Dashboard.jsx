@@ -1,18 +1,29 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import PageHeader from "../components/PageHeader.jsx";
 import * as api from "../api/client.js";
+import { JOB_DONE_EVENT } from "../realtime.js";
 
 export default function Dashboard() {
   const [apiStatus, setApiStatus] = useState(null);
   const [topics, setTopics] = useState([]);
   const [content, setContent] = useState([]);
 
-  useEffect(() => {
+  const refresh = useCallback(() => {
     api.checkHealth().then(setApiStatus).catch(() => setApiStatus({ status: "down" }));
     api.topics.list().then(setTopics).catch(() => {});
     api.content.list({ limit: 5 }).then(setContent).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  useEffect(() => {
+    const onJobDone = () => refresh();
+    window.addEventListener(JOB_DONE_EVENT, onJobDone);
+    return () => window.removeEventListener(JOB_DONE_EVENT, onJobDone);
+  }, [refresh]);
 
   return (
     <div className="space-y-10">

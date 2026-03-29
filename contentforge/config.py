@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     # Set true to keep SD on CPU even if a GPU is visible (debug / shared GPU).
     force_sd_cpu: bool = False
 
-    # Unsplash (https://unsplash.com/oauth/applications) — used when background_source is "unsplash".
+    # Unsplash (https://unsplash.com/oauth/applications) — used for topics with background_source "unsplash".
     unsplash_access_key: str = ""
 
 

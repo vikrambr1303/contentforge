@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as api from "../api/client.js";
+import { JOB_DONE_EVENT } from "../realtime.js";
 
 function formatEta(job, nowMs = Date.now()) {
   const st = job.status;
@@ -26,6 +27,12 @@ export default function GenerationStatus({ jobIds, onSettled }) {
   const [jobs, setJobs] = useState([]);
   const [polledOnce, setPolledOnce] = useState(false);
   const [etaTick, setEtaTick] = useState(0);
+  const settledCalledRef = useRef(false);
+  const jobIdsKey = (jobIds || []).join(",");
+
+  useEffect(() => {
+    settledCalledRef.current = false;
+  }, [jobIdsKey]);
 
   useEffect(() => {
     if (!jobIds?.length) return undefined;
@@ -51,6 +58,21 @@ export default function GenerationStatus({ jobIds, onSettled }) {
     };
   }, [jobIds]);
 
+  useEffect(() => {
+    if (!jobIds?.length) return undefined;
+    const want = new Set(jobIds.map((id) => Number(id)));
+    const onJobDone = (e) => {
+      const jid = e.detail?.job_id;
+      if (jid == null || !want.has(Number(jid))) return;
+      Promise.all(jobIds.map((id) => api.jobs.get(id).catch(() => null))).then((rows) => {
+        setJobs(rows.filter(Boolean));
+        setPolledOnce(true);
+      });
+    };
+    window.addEventListener(JOB_DONE_EVENT, onJobDone);
+    return () => window.removeEventListener(JOB_DONE_EVENT, onJobDone);
+  }, [jobIdsKey, jobIds]);
+
   const hasActiveJob = jobs.some((j) => !["done", "failed"].includes(j.status));
   useEffect(() => {
     if (!hasActiveJob) return undefined;
@@ -61,7 +83,10 @@ export default function GenerationStatus({ jobIds, onSettled }) {
   useEffect(() => {
     if (!jobs.length) return;
     const terminal = jobs.every((j) => ["done", "failed"].includes(j.status));
-    if (terminal) onSettled?.();
+    if (terminal && !settledCalledRef.current) {
+      settledCalledRef.current = true;
+      onSettled?.();
+    }
   }, [jobs, onSettled]);
 
   if (!jobIds?.length) return null;

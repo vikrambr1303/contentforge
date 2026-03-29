@@ -1,7 +1,10 @@
-.PHONY: up up-gpu down build build-gpu logs migrate shell-backend pull-model
+.PHONY: up rebuild up-gpu down build build-gpu logs migrate shell-backend pull-model
 
+# Rebuild images and recreate containers (use after backend/frontend/Docker changes).
 up:
 	docker compose up -d --build
+
+rebuild: up
 
 # Linux + NVIDIA: requires nvidia-container-toolkit. See docker-compose.gpu.yml.
 up-gpu:

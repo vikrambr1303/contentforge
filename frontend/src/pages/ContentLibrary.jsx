@@ -1,9 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import BlogContentCard from "../components/BlogContentCard.jsx";
 import ContentCard from "../components/ContentCard.jsx";
+import GenerationStatus from "../components/GenerationStatus.jsx";
 import PageHeader from "../components/PageHeader.jsx";
 import * as api from "../api/client.js";
+import { JOB_DONE_EVENT } from "../realtime.js";
+import { useAppStore } from "../store/useAppStore.js";
 
 export default function ContentLibrary() {
   const [items, setItems] = useState([]);
@@ -16,10 +19,12 @@ export default function ContentLibrary() {
   const [zipModal, setZipModal] = useState(false);
   const [includeVideo, setIncludeVideo] = useState(false);
   const [zipBusy, setZipBusy] = useState(false);
+  const watchedJobIds = useAppStore((s) => s.watchedJobIds);
+  const clearWatchedJobIds = useAppStore((s) => s.clearWatchedJobIds);
 
   const topicMap = useMemo(() => Object.fromEntries(topics.map((t) => [t.id, t])), [topics]);
 
-  function load() {
+  const load = useCallback(() => {
     api.platforms.accounts().then(setAccounts);
     api.content
       .list({
@@ -29,7 +34,7 @@ export default function ContentLibrary() {
         limit: 50,
       })
       .then(setItems);
-  }
+  }, [topicFilter, statusFilter, kindFilter]);
 
   useEffect(() => {
     api.topics.list().then(setTopics);
@@ -37,7 +42,13 @@ export default function ContentLibrary() {
 
   useEffect(() => {
     load();
-  }, [topicFilter, statusFilter, kindFilter]);
+  }, [load]);
+
+  useEffect(() => {
+    const onJobDone = () => load();
+    window.addEventListener(JOB_DONE_EVENT, onJobDone);
+    return () => window.removeEventListener(JOB_DONE_EVENT, onJobDone);
+  }, [load]);
 
   function toggle(id) {
     setSelected((prev) => {
@@ -139,6 +150,7 @@ export default function ContentLibrary() {
               <option value="approved">Approved</option>
               <option value="rejected">Rejected</option>
               <option value="posted">Posted</option>
+              <option value="failed">Failed (generation)</option>
             </select>
           </label>
           <label className="block flex-1 min-w-[10rem]">
@@ -151,6 +163,17 @@ export default function ContentLibrary() {
           </label>
         </div>
       </div>
+
+      {watchedJobIds.length > 0 ? (
+        <div className="space-y-2">
+          <div className="flex justify-end">
+            <button type="button" onClick={() => clearWatchedJobIds()} className="cf-btn-ghost text-xs">
+              Clear job list
+            </button>
+          </div>
+          <GenerationStatus jobIds={watchedJobIds} onSettled={() => load()} />
+        </div>
+      ) : null}
 
       {!items.length ? (
         <div className="cf-card-muted p-12 text-center max-w-lg mx-auto">

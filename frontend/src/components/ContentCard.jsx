@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import * as api from "../api/client.js";
+import RevisionModal from "./RevisionModal.jsx";
 
 function statusBadgeClass(status) {
   switch (status) {
@@ -50,6 +51,7 @@ export default function ContentCard({
   const [imgError, setImgError] = useState(false);
   const [quote, setQuote] = useState(item.quote_text || "");
   const [accountId, setAccountId] = useState(accounts[0]?.id || "");
+  const [revisionOpen, setRevisionOpen] = useState(false);
 
   useEffect(() => {
     if (!Array.isArray(accounts) || accounts.length === 0) return;
@@ -76,8 +78,9 @@ export default function ContentCard({
     };
   }, [preview]);
 
-  const imgSrc = item.image_path ? `/api/content/${item.id}/image` : null;
-  const vidSrc = item.video_path ? `/api/content/${item.id}/video` : null;
+  const mediaV = item.updated_at ? encodeURIComponent(item.updated_at) : String(item.id);
+  const imgSrc = item.image_path ? `/api/content/${item.id}/image?v=${mediaV}` : null;
+  const vidSrc = item.video_path ? `/api/content/${item.id}/video?v=${mediaV}` : null;
   const showImage = Boolean(imgSrc) && !imgError;
 
   function saveQuote() {
@@ -185,6 +188,13 @@ export default function ContentCard({
               <button type="button" onClick={() => setEdit(true)} className="cf-btn-secondary text-xs py-2">
                 Edit quote
               </button>
+              <button
+                type="button"
+                onClick={() => setRevisionOpen(true)}
+                className="cf-btn-secondary text-xs py-2 text-violet-200 border-violet-900/40 bg-violet-950/20 hover:bg-violet-950/35"
+              >
+                Revise
+              </button>
               <button type="button" onClick={() => setStatus("approved")} className="cf-btn-secondary text-xs py-2 text-emerald-200 border-emerald-900/40 bg-emerald-950/20 hover:bg-emerald-950/35">
                 Approve
               </button>
@@ -231,6 +241,14 @@ export default function ContentCard({
           </div>
         ) : null}
       </div>
+
+      <RevisionModal
+        open={revisionOpen}
+        onClose={() => setRevisionOpen(false)}
+        itemId={item.id}
+        kind="social"
+        hasBlogBody
+      />
 
       {preview &&
         typeof document !== "undefined" &&

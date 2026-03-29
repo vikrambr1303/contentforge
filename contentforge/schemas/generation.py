@@ -26,7 +26,7 @@ class JobOut(BaseModel):
     topic_id: int
     content_item_id: int | None
     job_type: str
-    status: str
+    payload_json: dict | list | None = None
     progress_percent: int = 0
     stage: str | None = None
     celery_task_id: str | None

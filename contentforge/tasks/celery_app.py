@@ -33,6 +33,8 @@ _GENERATION_TASK_NAMES = frozenset(
         "tasks.generate_content.run_quote_only",
         "tasks.generate_content.run_image_only",
         "tasks.generate_content.run_blog_generation",
+        "tasks.generate_content.run_revise_social",
+        "tasks.generate_content.run_revise_blog",
     }
 )
 
@@ -79,6 +81,7 @@ def _mark_generation_job_failed_on_task_failure(
         msg = msg[:1997] + "…"
 
     from database import SessionLocal
+    from models.content import ContentItem
     from models.generation_job import GenerationJob
 
     db = SessionLocal()
@@ -90,9 +93,50 @@ def _mark_generation_job_failed_on_task_failure(
         job.error_message = msg[:2000]
         job.stage = "Failed"
         job.completed_at = datetime.now(timezone.utc)
+        if job.content_item_id:
+            item = db.get(ContentItem, job.content_item_id)
+            if item and item.status == "generating":
+                item.status = "failed"
         db.commit()
         logger.info("Marked generation job %s failed via task_failure (%s)", job_id, exc_name)
+        from services.realtime import publish_job_event_sync
+
+        publish_job_event_sync(
+            settings.celery_broker_url,
+            job_id=job_id,
+            task_name=task_name or "",
+            ok=False,
+        )
     except Exception:
         logger.exception("task_failure handler could not update generation job %s", job_id)
     finally:
         db.close()
+
+
+@signals.task_success.connect(weak=False)
+def _publish_generation_job_done_on_success(sender=None, result=None, **_kwargs: object) -> None:
+    task_name = getattr(sender, "name", None)
+    if task_name not in _GENERATION_TASK_NAMES:
+        return
+    req = getattr(sender, "request", None)
+    args = getattr(req, "args", None) if req else None
+    job_id = _generation_job_id_from_task_args(args)
+    if job_id is None:
+        return
+    content_item_id: int | None = None
+    if isinstance(result, dict):
+        raw = result.get("content_item_id")
+        if raw is not None:
+            try:
+                content_item_id = int(raw)
+            except (TypeError, ValueError):
+                content_item_id = None
+    from services.realtime import publish_job_event_sync
+
+    publish_job_event_sync(
+        settings.celery_broker_url,
+        job_id=job_id,
+        task_name=task_name or "",
+        ok=True,
+        content_item_id=content_item_id,
+    )

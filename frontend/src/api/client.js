@@ -22,6 +22,7 @@ export const topics = {
     return client.post(`/topics/${id}/reference-image`, fd).then((r) => r.data);
   },
   deleteReferenceImage: (id) => client.delete(`/topics/${id}/reference-image`).then((r) => r.data),
+  refinePreview: (body) => client.post("/topics/refine-preview", body).then((r) => r.data),
 };
 
 export const content = {
@@ -41,6 +42,8 @@ export const content = {
         { responseType: "blob" }
       )
       .then((r) => r.data),
+  blogSections: (id) => client.get(`/content/${id}/blog/sections`).then((r) => r.data),
+  revise: (id, body) => client.post(`/content/${id}/revise`, body).then((r) => r.data),
 };
 
 export const generation = {

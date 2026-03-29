@@ -8,6 +8,13 @@ import httpx
 
 from config import get_settings
 from models.topic import Topic
+from schemas.topic import (
+    CONTENT_STYLE_VALUES,
+    ContentStyle,
+    TopicRefineFieldSuggestion,
+    TopicRefineResponse,
+    TopicRefineStyleSuggestion,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -194,6 +201,7 @@ def enrich_sd_prompt_sync(
     model: str,
     *,
     quote_excerpt: str | None = None,
+    revision_feedback: str | None = None,
 ) -> dict[str, str | None]:
     """
     Expand topic + mood (+ optional quote) into a richer Stable Diffusion prompt stem via Ollama.
@@ -218,13 +226,24 @@ def enrich_sd_prompt_sync(
             "or describe specific objects from that image.\n"
         )
 
+    rv = (revision_feedback or "").strip()
+    if len(rv) > 400:
+        rv = rv[:397] + "…"
+    revision_block = ""
+    if rv:
+        revision_block = f"""
+IMPORTANT — Editor revision feedback (this run replaces a previous background; obey this strongly in "visual" and "negative_extra" when relevant):
+{rv}
+
+"""
+
     user_prompt = f"""You write fragments for Stable Diffusion 1.5 image prompts (backgrounds only).
 
 Topic name: {topic.name}
 Topic description: {topic.description or "(none)"}
 Editor visual style hint: {topic.image_style}
 Mood: {mood}
-{ref_note}{quote_block}
+{ref_note}{quote_block}{revision_block}
 Write one dense comma-separated ENGLISH fragment: abstract or highly stylized scenery — color, light, atmosphere, shapes, texture, motion-energy. Premium motion-design / illustrative / gradient-art bias. Not a stock photo.
 
 Hard rules:
@@ -278,6 +297,7 @@ def stock_photo_search_query_sync(
     model: str,
     *,
     style_hint: str | None = None,
+    revision_feedback: str | None = None,
 ) -> str:
     """
     Short keyword line for Unsplash search (real photos). Falls back to topic-based words if Ollama fails.
@@ -286,13 +306,21 @@ def stock_photo_search_query_sync(
     sh = (style_hint or "").strip()
     if len(sh) > 240:
         sh = sh[:237] + "…"
+    rv = (revision_feedback or "").strip()
+    if len(rv) > 320:
+        rv = rv[:317] + "…"
+    rev_line = (
+        f"\nEditor revision feedback — keywords MUST reflect this (e.g. different setting, palette, or subject): {rv}\n"
+        if rv
+        else ""
+    )
     user_prompt = f"""Topic: {topic.name}
 Topic description: {topic.description or "(none)"}
 Mood: {mood}
 Prior art direction (optional, may be abstract prompt language): {sh or "(none)"}
-
-Produce 2-6 lowercase English words suitable for searching royalty-free photos (e.g. Unsplash).
-Prefer landscapes, skies, water, fog, textures, plants, mountains, ocean — atmospheric and on-theme.
+{rev_line}
+Produce 2-8 lowercase English words suitable for searching royalty-free photos (e.g. Unsplash).
+Prefer landscapes, skies, water, fog, textures, plants, mountains, ocean — atmospheric and on-theme unless the revision feedback clearly asks for something else (e.g. urban, studio, minimal).
 No proper names, no instructions, no commas inside the string.
 
 Return JSON only: {{"q": "word1 word2 word3"}}"""
@@ -330,7 +358,163 @@ Return JSON only: {{"q": "word1 word2 word3"}}"""
     tail = re.sub(r"[^a-z0-9\s]+", " ", tail)
     tail = " ".join(tail.split())[:50]
     out = f"{base} {tail}".strip()
+    if rv:
+        fb_words = " ".join(re.findall(r"[a-z0-9]{3,}", rv.lower()))[:60]
+        if fb_words:
+            out = f"{fb_words} {out}".strip()
     return out[:120] if out else "moody nature abstract sky"
+
+
+def revise_quote_for_social_sync(
+    topic: Topic,
+    model: str,
+    *,
+    previous_quote: str,
+    previous_author: str,
+    feedback: str,
+    use_feedback: bool,
+) -> dict[str, str]:
+    """Regenerate quote + attribution for social revision; respects user feedback or random variation."""
+    settings = get_settings()
+    nonce = secrets.token_hex(4)
+    prev_q = (previous_quote or "").strip()[:300]
+    prev_a = (previous_author or "").strip()[:200]
+    if use_feedback:
+        fb = (feedback or "").strip()[:2000]
+        user_prompt = f"""
+Topic: {topic.name}
+Description: {topic.description or ""}
+Style: {topic.style}
+
+Current quote: "{prev_q}"
+Current attribution: {prev_a}
+
+Editor feedback (apply as much as possible while keeping a single short quote line):
+{fb}
+
+Request id: {nonce}
+
+Return JSON with exactly:
+  quote: string (max 120 characters)
+  author: string (attribution, max 255 chars)
+  mood: string (one of: serene, dramatic, contemplative, uplifting)
+"""
+    else:
+        user_prompt = f"""
+Topic: {topic.name}
+Description: {topic.description or ""}
+Style: {topic.style}
+
+Previous attempt (do not copy verbatim; produce a clearly different line):
+Quote: "{prev_q}"
+Author: {prev_a}
+
+Request id: {nonce} — fresh variation only, same theme. No user feedback to apply.
+
+Return JSON with exactly:
+  quote: string (max 120 characters)
+  author: string
+  mood: string (one of: serene, dramatic, contemplative, uplifting)
+"""
+    payload = {
+        "model": model,
+        "prompt": user_prompt,
+        "system": "You are a creative writer. Respond ONLY with valid JSON, no markdown.",
+        "stream": False,
+        "format": "json",
+        "options": _OLLAMA_SAMPLE_OPTIONS,
+    }
+    with httpx.Client(timeout=120.0) as client:
+        r = client.post(f"{settings.ollama_base_url.rstrip('/')}/api/generate", json=payload)
+        r.raise_for_status()
+        data = r.json()
+    raw = data.get("response") or ""
+    try:
+        parsed = _extract_json(raw)
+    except (json.JSONDecodeError, ValueError):
+        parsed = json.loads(raw) if raw.strip().startswith("{") else {}
+    quote = str(parsed.get("quote", "")).strip()[:500]
+    author = str(parsed.get("author", "Unknown")).strip()[:255]
+    mood = str(parsed.get("mood", "contemplative")).strip()
+    if mood not in ("serene", "dramatic", "contemplative", "uplifting"):
+        mood = "contemplative"
+    if not quote:
+        quote = prev_q[:120] or "—"
+    return {"quote": quote, "author": author, "mood": mood}
+
+
+def revise_blog_section_sync(
+    topic: Topic,
+    model: str,
+    *,
+    section_block: str,
+    section_index: int,
+    feedback: str,
+    use_feedback: bool,
+) -> str:
+    """Rewrite one blog section (full block text in/out). Markdown only."""
+    settings = get_settings()
+    nonce = secrets.token_hex(4)
+    block = section_block.strip()
+    if len(block) > 12000:
+        block = block[:11997] + "…"
+    if use_feedback:
+        fb = (feedback or "").strip()[:4000]
+        user_prompt = f"""
+Blog topic: {topic.name}
+Context: {topic.description or "(none)"}
+Voice: {topic.style}
+
+You are replacing section index {section_index} of a Markdown article. Output ONLY that section’s markdown,
+from the first line of the block through the end (include the ## heading line if the current block starts with ##;
+if this is the opening block, keep the # title and any intro as appropriate).
+
+Current block:
+---
+{block}
+---
+
+Editor feedback:
+{fb}
+
+Request id: {nonce}
+
+Rules: Preserve any ```mermaid``` fences if you keep diagrams; syntax must be valid. No HTML. No preamble outside the block.
+"""
+    else:
+        user_prompt = f"""
+Blog topic: {topic.name}
+Context: {topic.description or "(none)"}
+Voice: {topic.style}
+
+Rewrite section index {section_index} with a fresh variation. Do not copy the current text verbatim.
+
+Current block:
+---
+{block}
+---
+
+Request id: {nonce} — stochastic alternative; no specific user feedback.
+
+Output ONLY the replacement markdown for this section (same structural role: preamble vs ## section).
+Rules: ```mermaid``` allowed; valid syntax. No HTML. No preamble.
+"""
+    payload = {
+        "model": model,
+        "prompt": user_prompt,
+        "system": "You write Markdown only. Output nothing before or after the section body.",
+        "stream": False,
+        "options": _OLLAMA_BLOG_OPTIONS,
+    }
+    with httpx.Client(timeout=httpx.Timeout(connect=15.0, read=300.0, write=60.0, pool=10.0)) as client:
+        r = client.post(f"{settings.ollama_base_url.rstrip('/')}/api/generate", json=payload)
+        r.raise_for_status()
+        data = r.json()
+    raw = (data.get("response") or "").strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:markdown|md)?\s*\n", "", raw)
+        raw = re.sub(r"\n```\s*$", "", raw)
+    return raw.strip()
 
 
 def generate_blog_post_sync(topic: Topic, model: str) -> str:
@@ -393,6 +577,123 @@ Start with the # title line only.
         raw = re.sub(r"^```(?:markdown|md)?\s*\n", "", raw)
         raw = re.sub(r"\n```\s*$", "", raw)
     return raw.strip()
+
+
+_STYLE_ENUM = CONTENT_STYLE_VALUES
+
+
+def refine_topic_draft_sync(
+    *,
+    name: str,
+    description: str | None,
+    style: str,
+    image_style: str,
+    background_source: str,
+    scopes: list[str],
+    user_note: str | None,
+    model: str,
+) -> TopicRefineResponse:
+    """
+    Improve topic brief fields for ContentForge generation. Preview-only; caller does not persist.
+    """
+    settings = get_settings()
+    note = (user_note or "").strip()[:2000]
+    raw_scopes = set(scopes)
+    if "whole" in raw_scopes:
+        targets = {"description", "image_style", "style"}
+    else:
+        targets = {s for s in raw_scopes if s in ("description", "image_style", "style")}
+
+    if not targets:
+        return TopicRefineResponse()
+
+    desc_in = (description or "").strip()[:12000]
+    style_in = (style or "inspirational").strip().lower()
+    if style_in not in _STYLE_ENUM:
+        style_in = ContentStyle.inspirational.value
+    img_in = (image_style or "").strip()[:500]
+    name_in = (name or "").strip()[:255]
+    bg = (background_source or "diffusers").strip().lower()
+
+    targets_list = ", ".join(sorted(targets))
+    note_block = f"\nEditor extra instructions (follow if sensible):\n{note}\n" if note else ""
+
+    user_prompt = f"""You are an editorial assistant for a content generation app. The user is drafting a TOPIC brief
+used to generate social quote cards and blog posts. Improve clarity and usefulness for LLM-driven generation.
+
+Current draft:
+- Name (for context only; do not rename in JSON): {name_in or "(empty)"}
+- Description: {desc_in or "(empty)"}
+- Content style (one of: {", ".join(_STYLE_ENUM)}): {style_in}
+- Image mood / visual style hint (short phrase for image prompts): {img_in or "(empty)"}
+- Background images: {"Unsplash stock photos" if bg == "unsplash" else "Stable Diffusion (local)"}
+
+Improve ONLY these parts: {targets_list}
+{note_block}
+Rules:
+- Description: concrete audience, themes, tone, boundaries; avoid generic filler. Max ~4000 characters in "text".
+- Image mood: comma-separated or short phrase; vivid but not contradictory; max 500 chars in "text". Good for {"stock photo keywords" if bg == "unsplash" else "SD prompts"}.
+- Content style: pick exactly one slug from the list above — only if "style" is in scope.
+
+Return JSON ONLY, no markdown fences, shape:
+{{
+  "description": null or {{"text": "...", "rationale": "one short sentence"}},
+  "image_style": null or {{"text": "...", "rationale": "..."}},
+  "style": null or {{"value": "{'|'.join(_STYLE_ENUM)}", "rationale": "..."}}
+}}
+Include a key only if that part is in the improvement list. Use null for omitted parts.
+"""
+    payload = {
+        "model": model,
+        "prompt": user_prompt,
+        "system": "You respond ONLY with valid JSON, no markdown.",
+        "stream": False,
+        "format": "json",
+        "options": _OLLAMA_ENRICH_OPTIONS,
+    }
+    url = f"{settings.ollama_base_url.rstrip('/')}/api/generate"
+    timeout = httpx.Timeout(connect=15.0, read=120.0, write=60.0, pool=10.0)
+    with httpx.Client(timeout=timeout) as client:
+        r = client.post(url, json=payload)
+        r.raise_for_status()
+        data = r.json()
+    raw = (data.get("response") or "").strip()
+    try:
+        parsed = _extract_json(raw)
+    except (json.JSONDecodeError, ValueError) as e:
+        logger.warning("refine_topic_draft: bad JSON from model: %s", e)
+        raise ValueError("Model did not return valid JSON. Try again or shorten your note.") from e
+
+    out_desc: TopicRefineFieldSuggestion | None = None
+    out_img: TopicRefineFieldSuggestion | None = None
+    out_style: TopicRefineStyleSuggestion | None = None
+
+    if "description" in targets:
+        d = parsed.get("description")
+        if isinstance(d, dict):
+            text = str(d.get("text", "")).strip()[:8000]
+            rat = str(d.get("rationale", "")).strip()[:500]
+            if text:
+                out_desc = TopicRefineFieldSuggestion(text=text, rationale=rat)
+
+    if "image_style" in targets:
+        d = parsed.get("image_style")
+        if isinstance(d, dict):
+            text = str(d.get("text", "")).strip()[:500]
+            rat = str(d.get("rationale", "")).strip()[:500]
+            if text:
+                out_img = TopicRefineFieldSuggestion(text=text, rationale=rat)
+
+    if "style" in targets:
+        d = parsed.get("style")
+        if isinstance(d, dict):
+            val = str(d.get("value", "")).strip().lower()
+            if val not in _STYLE_ENUM:
+                val = style_in
+            rat = str(d.get("rationale", "")).strip()[:500]
+            out_style = TopicRefineStyleSuggestion(value=ContentStyle(val), rationale=rat)
+
+    return TopicRefineResponse(description=out_desc, image_style=out_img, style=out_style)
 
 
 async def list_ollama_models() -> list[dict[str, Any]]:

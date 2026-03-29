@@ -8,6 +8,68 @@ logger = logging.getLogger(__name__)
 
 KROKI_MERMAID_PNG = "https://kroki.io/mermaid/png"
 MERMAID_BLOCK_RE = re.compile(r"```mermaid\s*\n([\s\S]*?)```", re.IGNORECASE)
+# Level-2 headings only (### is inside a section, not a split point).
+_H2_HEADING_START = re.compile(r"^##\s+[^#\n].*$", re.MULTILINE)
+
+
+def split_h2_sections(markdown: str) -> list[str]:
+    """
+    Split markdown into blocks: preamble (before first ## heading), then each ## section through the next ##.
+    ### subheadings stay inside their parent ## block.
+    """
+    md = (markdown or "").replace("\r\n", "\n")
+    if not md.strip():
+        return [md]
+    matches = list(_H2_HEADING_START.finditer(md))
+    if not matches:
+        return [md]
+    parts: list[str] = []
+    parts.append(md[: matches[0].start()])
+    for i, m in enumerate(matches):
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(md)
+        parts.append(md[m.start() : end])
+    return parts
+
+
+def replace_h2_section(markdown: str, section_index: int, new_block: str) -> str:
+    parts = split_h2_sections(markdown)
+    if section_index < 0 or section_index >= len(parts):
+        raise ValueError("section_index out of range")
+    parts[section_index] = new_block.strip("\n")
+    return join_h2_sections(parts)
+
+
+def join_h2_sections(parts: list[str]) -> str:
+    out: list[str] = []
+    for p in parts:
+        s = p.strip("\n")
+        if s:
+            out.append(s)
+    return ("\n\n".join(out) + "\n") if out else ""
+
+
+def section_infos_for_api(markdown: str) -> list[dict[str, str | int]]:
+    blocks = split_h2_sections(markdown)
+    infos: list[dict[str, str | int]] = []
+    for i, block in enumerate(blocks):
+        stripped = block.strip()
+        first_line = stripped.split("\n", 1)[0].strip() if stripped else ""
+        label = (first_line[:100] or f"Section {i}").replace("#", "").strip() or f"Section {i}"
+        flat = " ".join(stripped.split())
+        preview = flat[:140] + ("…" if len(flat) > 140 else "")
+        infos.append({"index": i, "label": label, "preview": preview})
+    return infos
+
+
+def clear_blog_diagram_pngs(item_id: int, data_root: Path) -> None:
+    d = data_root / "blog" / str(item_id)
+    if not d.is_dir():
+        return
+    for f in d.glob("diagram_*.png"):
+        try:
+            f.unlink()
+        except OSError:
+            logger.warning("Could not remove %s", f)
 
 
 def find_mermaid_blocks(markdown: str) -> list[str]:

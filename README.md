@@ -37,7 +37,7 @@ flowchart LR
 | **frontend** | React SPA; Vite dev server proxies `/api` and `/health` to the backend (in Compose: `http://backend:8000`). |
 | **backend** | FastAPI: CRUD, settings, generation triggers, static file routes for content images/videos. **Does not** run heavy image generation. |
 | **worker** | Same Python image as backend; runs **Celery** with `concurrency=1` so only one generation task loads SD/RAM at a time. |
-| **redis** | Celery broker and result backend. |
+| **redis** | Celery broker and result backend; also **Redis pub/sub** so the API can broadcast generation events to browsers over WebSockets. |
 | **db** | MySQL: topics, content items, generation jobs, app settings, platform accounts, post history. |
 | **ollama** | Local LLM HTTP API (`/api/generate`) for quotes, SD prompt enrichment, stock-photo search phrases, and social captions. |
 
@@ -47,7 +47,7 @@ flowchart LR
 
 - **Backend:** Python 3.11, FastAPI, SQLAlchemy 2, Alembic, Celery 5, httpx, Pillow, diffusers/torch (in worker), MoviePy (video).
 - **Frontend:** React, React Router, Vite, Tailwind-style utility classes (`cf-*`), axios.
-- **Infra:** Docker Compose; optional `docker-compose.gpu.yml` for NVIDIA hosts.
+- **Infra:** Docker Compose; optional `docker-compose.gpu.yml` for NVIDIA hosts; Redis pub/sub for live UI updates.
 
 ---
 
@@ -75,7 +75,7 @@ flowchart LR
 
    Edit MySQL passwords, `SECRET_KEY`, and any optional keys (e.g. `UNSPLASH_ACCESS_KEY`).
 
-2. **Stable Diffusion weights (optional, for `background_source = diffusers`)**
+2. **Stable Diffusion weights (optional, for topics that use Stable Diffusion backgrounds)**
 
    The worker expects a **diffusers** layout at the path stored in **Settings → Diffusers model path** (default in DB is often `/models/stable-diffusion`). The compose file mounts `./models/sd15` at `/models/sd15`; point Settings to that path or adjust the mount.
 
@@ -85,7 +85,7 @@ flowchart LR
    docker compose exec ollama ollama pull llama3.2
    ```
 
-   Match the model name to **Settings → Ollama model**.
+   In **Settings**, pick the model by name (the UI lists installed models from Ollama’s **`/api/tags`**; pull new ones with `ollama pull …` then refresh).
 
 4. **Start stack**
 
@@ -122,7 +122,7 @@ Loaded from `.env` into **backend** and **worker** (`env_file` in Compose). Name
 | `NGROK_LOCAL_API_URL` | Optional; if `PUBLIC_BASE_URL` is empty, the app queries this ngrok agent URL (`…/api/tunnels`) when building media URLs. Compose: `http://ngrok:4040`. Host ngrok: `http://host.docker.internal:4040`. |
 | `NGROK_AUTHTOKEN` | Required for the optional `ngrok` Compose service (`--profile ngrok`). |
 | `NGROK_DOMAIN` | Your **reserved** ngrok hostname (e.g. `myapp.ngrok-free.app`). Passed to `ngrok http --domain=…` so the public URL is stable. |
-| `UNSPLASH_ACCESS_KEY` | Required if **Settings → Background source** is **Unsplash**. |
+| `UNSPLASH_ACCESS_KEY` | Required if any **topic** uses **Unsplash** for backgrounds. |
 | `SD_INFERENCE_STEPS_GPU` | More steps on CUDA (worker). |
 | `FORCE_SD_CPU` | Force CPU even if GPU visible (debug). |
 
@@ -134,13 +134,13 @@ MySQL variables (`MYSQL_*`) are for the **db** service image; `DATABASE_URL` mus
 
 - **Alembic** lives under `contentforge/alembic/`. Revisions include initial schema, job progress, topic style reference, generation retry limit, and background source.
 - Always run `alembic upgrade head` after pulling migrations.
-- Singleton **`app_settings`** row (`id = 1`) holds Ollama model name, diffusers path, default image style, caption CTA, retry limit, and **`background_source`** (`diffusers` | `unsplash`).
+- Singleton **`app_settings`** row (`id = 1`) holds Ollama model name, diffusers path, default image style, caption CTA, and generation retry limit. **`background_source`** (`diffusers` | `unsplash`) is stored **per topic** (not on `app_settings`).
 
 ---
 
 ## Generation pipeline (deep dive)
 
-Generation is **asynchronous**: the API creates DB rows and enqueues **Celery tasks**. The UI polls **`GET /api/jobs/{id}`** for `status`, `progress_percent`, `stage`, and errors.
+Generation is **asynchronous**: the API creates DB rows and enqueues **Celery tasks**. The UI polls **`GET /api/jobs/{id}`** for `status`, `progress_percent`, `stage`, and errors while jobs run. When a generation task **succeeds or fails**, the worker **publishes** an event to Redis; the API **WebSocket** at **`/api/ws`** forwards it to connected clients so the **Content Library**, **Dashboard**, and job panels **refetch** without waiting for the next poll.
 
 ### Core entities
 
@@ -199,7 +199,7 @@ sequenceDiagram
 
 3. **Prompt package** — `_prepare_background_prompts()` calls `enrich_sd_prompt_sync()` so Ollama returns a structured `visual` fragment (and optional `negative_extra`) for **abstract, no-people** backgrounds. If enrichment fails, the worker falls back to `topic.image_style` + mood template (still SD-oriented rules).
 
-4. **Background file** — `_produce_background()` branches on **`app_settings.background_source`**:
+4. **Background file** — `_produce_background()` branches on the **topic’s** **`background_source`**:
    - **`diffusers`** — `image_service.generate_background()`: loads **StableDiffusionPipeline** or **StableDiffusionImg2ImgPipeline** if the topic has a **style reference** (`topic_refs/...` under `data_dir`). Progress callbacks map diffusion steps into `progress_percent` (roughly 26–86% for full job). Output: `backgrounds/{content_id}_background.jpg` (default dimensions 1080×1920 portrait). On failure (missing model, etc.), a **gradient placeholder** may be written (see `image_service`).
    - **`unsplash`** — Requires `UNSPLASH_ACCESS_KEY`. Ollama produces a short **stock search query** (`stock_photo_search_query_sync`). The worker searches Unsplash (portrait), picks a result, triggers download tracking, fetches the image, **cover-crops** to target size, saves the same relative `backgrounds/...` path. `ContentItem.image_model` is set to `"unsplash"`.
 
@@ -236,7 +236,8 @@ All JSON routers are mounted under **`/api`** (see `main.py`):
 | `/api/generate` | Trigger full / quote / image generation (see above). |
 | `/api/jobs` | Job status polling. |
 | `/api/settings` | App settings get/patch. |
-| `/api/llm` | e.g. list Ollama models for the Settings UI. |
+| `/api/llm` | List installed Ollama models (`/api/tags` proxy) for Settings. |
+| `/api/ws` | **WebSocket** — optional client `ping` / server `pong`; server pushes `job_done` after generation Celery tasks finish (success or handled failure). |
 | `/api/platforms`, `/api/accounts`, `/api/post`, `/api/post-history` | Social integrations. |
 
 Unauthenticated in default dev layout; tighten before production.
@@ -266,9 +267,16 @@ If ngrok runs on the **host** instead of Compose, point **`NGROK_LOCAL_API_URL`*
 
 ## Local frontend development (without Docker for UI)
 
-If you run `npm run dev` on the host, point the Vite proxy at a reachable backend (e.g. change `vite.config.js` `target` to `http://127.0.0.1:8000` when the API is exposed from Docker on port 8000).
+If you run `npm run dev` on the host, point the Vite proxy at a reachable backend (e.g. change `vite.config.js` `target` to `http://127.0.0.1:8000` when the API is exposed from Docker on port 8000). The `/api` proxy enables **WebSockets** (`ws: true`) so **`/api/ws`** works for live job events during dev.
+
+**Production / reverse proxy:** If you terminate TLS or proxy in front of the API, enable **WebSocket pass-through** (e.g. `Upgrade` / `Connection` headers) for paths used by the SPA.
 
 ---
+
+## UI: Settings and topics
+
+- **Settings** — Choose the **Ollama** model by name (free text + suggestions from installed models, with size / modified time when Ollama returns them). Pick a **Stable Diffusion** diffusers path via common presets or a custom container path. Save persists to `app_settings`.
+- **Topics** — **Content style** is a preset list (voice/tone for quotes, captions, blog) with optional custom value. **Image mood / visual style** uses **presets** or **custom** text for SD/Unsplash hints. **Background source** (Stable Diffusion vs Unsplash) is **per topic**; optional **style reference** image applies to SD.
 
 ## Operational notes
 

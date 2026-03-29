@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -33,3 +34,17 @@ class ContentItemOut(BaseModel):
 class BatchDownloadRequest(BaseModel):
     ids: list[int]
     include_video: bool = False
+
+
+class BlogSectionInfo(BaseModel):
+    index: int
+    label: str
+    preview: str
+
+
+class ReviseContentRequest(BaseModel):
+    mode: Literal["feedback", "random"]
+    feedback: str = ""
+    blog_section_index: int | None = None
+    # Social only: with mode=feedback, skip quote rewrite and only regenerate background + composite.
+    background_only: bool = False
