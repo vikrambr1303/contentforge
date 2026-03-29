@@ -154,8 +154,15 @@ Generation is **asynchronous**: the API creates DB rows and enqueues **Celery ta
 | `POST /api/generate` | `run_full_generation` | `full` | Quote → background → composite → optional video. |
 | `POST /api/generate/quote` | `run_quote_only` | `quote` | Quote (and mood) only; no image. |
 | `POST /api/generate/image` | `run_image_only` | `image` | Image pipeline for an **existing** item that already has `quote_text`. |
+| `POST /api/generate/blog` | `run_blog_generation` | `blog` | Long-form Markdown blog (see below). |
 
 Batch generate creates **N** content items and **N** jobs in one request (`count` in body).
+
+### Blog generation (`run_blog_generation`)
+
+1. **Plan** — `llm_service.classify_blog_topic_sync()` asks Ollama for JSON: **`topic_kind`** (`technical` | `functional` | `general`), **`mermaid_max`** (0–2), and a one-sentence **`content_focus`**. Technical leans toward systems and depth; functional toward workflows and outcomes; general is balanced. On parse errors, a safe default plan is used.
+2. **Write** — `generate_blog_post_sync(topic, model, plan=…)` produces Markdown whose structure and **optional** Mermaid usage follow that plan (no fenced Mermaid blocks when `mermaid_max` is 0; otherwise up to one or two optional diagrams).
+3. **Render** — `blog_service.process_blog_markdown()` still turns any Mermaid blocks into PNGs via Kroki when present.
 
 ### Full generation sequence (`run_full_generation`)
 

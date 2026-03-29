@@ -14,7 +14,7 @@ from models.app_settings import AppSettings
 from models.content import ContentItem
 from models.generation_job import GenerationJob
 from models.topic import Topic
-from services import blog_service, image_service, llm_service, video_service
+from services import blog_service, caption_service, image_service, llm_service, video_service
 from tasks.celery_app import app
 
 logger = logging.getLogger(__name__)
@@ -403,6 +403,11 @@ def _run_full_generation_once(
         video_service.make_ken_burns_video(img_path, vid_path)
         item.video_path = vid_rel
 
+    job.progress_percent = max(job.progress_percent, 96)
+    job.stage = "Writing caption"
+    db.commit()
+    caption_service.refresh_caption(db, item)
+
     item.status = "draft"
     job.status = "done"
     job.progress_percent = 100
@@ -510,6 +515,10 @@ def _run_quote_only_once(
     item.quote_text = q["quote"]
     item.quote_author = q["author"]
     item.generation_model = app_s.ollama_model
+    job.progress_percent = max(job.progress_percent, 92)
+    job.stage = "Writing caption"
+    db.commit()
+    caption_service.refresh_caption(db, item)
     item.status = "draft"
     job.status = "done"
     job.progress_percent = 100
@@ -646,6 +655,10 @@ def _run_image_only_once(
     db.commit()
     image_service.composite_quote(bg_path, img_path, item.quote_text, item.quote_author or "")
     item.image_path = img_rel
+    job.progress_percent = max(job.progress_percent, 96)
+    job.stage = "Writing caption"
+    db.commit()
+    caption_service.refresh_caption(db, item)
     job.status = "done"
     job.progress_percent = 100
     job.stage = "Complete"
@@ -747,11 +760,17 @@ def _run_blog_generation_once(
     app_s = _settings_row(db)
     model = app_s.ollama_model
 
-    job.progress_percent = max(job.progress_percent, 12)
+    job.progress_percent = max(job.progress_percent, 8)
+    job.stage = "Planning blog (topic type & diagrams)"
+    db.commit()
+
+    plan = llm_service.classify_blog_topic_sync(topic, model)
+
+    job.progress_percent = max(job.progress_percent, 14)
     job.stage = "Writing article (LLM)"
     db.commit()
 
-    md_raw = llm_service.generate_blog_post_sync(topic, model)
+    md_raw = llm_service.generate_blog_post_sync(topic, model, plan=plan)
     if not md_raw or len(md_raw) < 80:
         job.status = "failed"
         job.error_message = "Model returned empty or very short markdown"
@@ -762,7 +781,7 @@ def _run_blog_generation_once(
         return {"ok": False}
 
     job.progress_percent = max(job.progress_percent, 55)
-    job.stage = "Rendering Mermaid diagrams"
+    job.stage = "Rendering diagrams (if any)"
     db.commit()
 
     data_root = Path(get_settings().data_dir)
@@ -988,6 +1007,13 @@ def _run_revise_social_once(
             vid_path.unlink()
         video_service.make_ken_burns_video(img_path, vid_path)
         item.video_path = vid_rel
+
+    need_caption = (not background_only) or not (item.caption_text or "").strip()
+    if need_caption:
+        job.progress_percent = max(job.progress_percent, 96)
+        job.stage = "Writing caption"
+        db.commit()
+        caption_service.refresh_caption(db, item)
 
     job.status = "done"
     job.progress_percent = 100

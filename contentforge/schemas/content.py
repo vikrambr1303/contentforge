@@ -17,6 +17,7 @@ class ContentItemOut(BaseModel):
     kind: str = "social"
     quote_text: str | None
     quote_author: str | None
+    caption_text: str | None = None
     blog_markdown: str | None = None
     blog_assets_json: list | None = None
     image_path: str | None

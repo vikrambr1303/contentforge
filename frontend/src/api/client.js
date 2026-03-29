@@ -44,6 +44,7 @@ export const content = {
       .then((r) => r.data),
   blogSections: (id) => client.get(`/content/${id}/blog/sections`).then((r) => r.data),
   revise: (id, body) => client.post(`/content/${id}/revise`, body).then((r) => r.data),
+  refreshCaption: (id) => client.post(`/content/${id}/caption/refresh`).then((r) => r.data),
 };
 
 export const generation = {

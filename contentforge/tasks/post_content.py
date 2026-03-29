@@ -30,7 +30,8 @@ def post_to_platform(self, content_item_id: int, account_id: int) -> dict:
         app_s = db.get(AppSettings, 1)
         model = app_s.ollama_model if app_s else "llama3.2"
         topic = db.get(Topic, item.topic_id)
-        caption = llm_service.generate_caption_sync(
+        stored = (item.caption_text or "").strip()
+        caption = stored or llm_service.generate_caption_sync(
             topic.name if topic else "Content",
             item.quote_text or "",
             app_s.caption_cta if app_s else "",

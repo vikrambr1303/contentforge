@@ -2,6 +2,7 @@ import json
 import logging
 import re
 import secrets
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -38,6 +39,130 @@ _OLLAMA_BLOG_OPTIONS: dict[str, Any] = {
     "top_p": 0.93,
     "repeat_penalty": 1.14,
 }
+
+# Full-article blog generation: Ollama defaults (e.g. num_ctx 2048) truncate long posts—give prompt + output room.
+_OLLAMA_BLOG_LONG_OPTIONS: dict[str, Any] = {
+    **_OLLAMA_BLOG_OPTIONS,
+    "num_ctx": 16384,
+    "num_predict": 8192,
+}
+
+# Blog topic classification: steadier JSON.
+_OLLAMA_BLOG_CLASSIFY_OPTIONS: dict[str, Any] = {
+    "temperature": 0.45,
+    "top_p": 0.9,
+    "repeat_penalty": 1.05,
+}
+
+_BLOG_TOPIC_KINDS = frozenset({"technical", "functional", "general"})
+
+# Shown in blog prompts when Mermaid is allowed — reduces Kroki parse failures from sloppy syntax.
+_MERMAID_SYNTAX_RULES = """
+Mermaid syntax (follow exactly — invalid diagrams break rendering):
+- The FIRST non-empty line inside the fence MUST be a diagram type, e.g. `flowchart TD`, `flowchart LR`, or `sequenceDiagram` (not prose above it).
+- Never put headings (`#`), **bold** titles, or normal article sentences inside the ```mermaid``` fence—only Mermaid syntax. Explanatory text belongs in the paragraph after the closing ```.
+- Use simple node IDs: letters/digits only (A, B, C1). Put readable text in square brackets: `A[Read data]` or `B["Label with (parentheses)"]` — quotes required if the label contains `()`, `"`, or `]`.
+- Link with `-->` on its own or chained: `A --> B --> C`. Avoid HTML, markdown, or nested ``` inside the mermaid block.
+- Valid minimal example:
+```mermaid
+flowchart LR
+    A[Input] --> B[Process]
+    B --> C[Output]
+```
+"""
+
+
+
+
+@dataclass(frozen=True)
+class BlogGenerationPlan:
+    """LLM-inferred shape for one blog generation run."""
+
+    topic_kind: str  # technical | functional | general
+    mermaid_max: int  # 0 = no diagrams; 1 or 2 = optional Mermaid cap
+    content_focus: str
+
+
+DEFAULT_BLOG_PLAN = BlogGenerationPlan(
+    topic_kind="general",
+    mermaid_max=1,
+    content_focus="Balanced coverage: clear explanations and practical takeaways.",
+)
+
+
+def classify_blog_topic_sync(topic: Topic, model: str) -> BlogGenerationPlan:
+    """
+    Decide whether the brief is mainly technical, functional, or mixed, and whether Mermaid helps.
+    One fast JSON call before the long blog generation.
+    """
+    settings = get_settings()
+    nonce = secrets.token_hex(4)
+    name = (topic.name or "").strip()[:500]
+    desc = (topic.description or "").strip()[:8000]
+    style = (topic.style or "").strip()[:80]
+    user_prompt = f"""You route blog briefs for a content tool. Read the topic and return JSON ONLY (no markdown fences).
+
+Topic name: {name or "(empty)"}
+Topic description: {desc or "(empty)"}
+Declared voice/style hint: {style or "(none)"}
+
+Return exactly this JSON shape:
+{{
+  "topic_kind": "technical" | "functional" | "general",
+  "include_mermaid": boolean,
+  "mermaid_max": 0 | 1 | 2,
+  "content_focus": "one concise sentence: what the article should emphasize"
+}}
+
+Definitions:
+- technical: systems, engineering, APIs, architecture, security, infrastructure, data pipelines, algorithms, developer or SRE audience.
+- functional: business process, product workflows, user journeys, stakeholder value, adoption, operations without deep internals, softer skill or strategy topics.
+- general: mixed, unclear, or broad audience — balanced coverage.
+
+include_mermaid: true only if diagrams (flow, sequence, component relationships) would genuinely help. false for pure narrative, opinion, culture, or topics where diagrams add little.
+mermaid_max: if include_mermaid is false, use 0. If true, use 1 or 2 based on how many distinct visual structures are justified (prefer 1 unless the brief clearly needs two).
+
+Request id: {nonce}
+"""
+    payload = {
+        "model": model,
+        "prompt": user_prompt,
+        "system": "You respond ONLY with valid JSON, no markdown.",
+        "stream": False,
+        "format": "json",
+        "options": _OLLAMA_BLOG_CLASSIFY_OPTIONS,
+    }
+    try:
+        with httpx.Client(timeout=httpx.Timeout(connect=15.0, read=120.0, write=60.0, pool=10.0)) as client:
+            r = client.post(f"{settings.ollama_base_url.rstrip('/')}/api/generate", json=payload)
+            r.raise_for_status()
+            data = r.json()
+        raw = (data.get("response") or "").strip()
+        parsed = _extract_json(raw)
+    except Exception as e:
+        logger.warning("classify_blog_topic_sync failed, using default plan: %s", e)
+        return DEFAULT_BLOG_PLAN
+
+    kind = str(parsed.get("topic_kind", "general")).strip().lower()
+    if kind not in _BLOG_TOPIC_KINDS:
+        kind = "general"
+    include = bool(parsed.get("include_mermaid", True))
+    try:
+        mm = int(parsed.get("mermaid_max", 1))
+    except (TypeError, ValueError):
+        mm = 1
+    mm = max(0, min(2, mm))
+    if not include:
+        mm = 0
+    elif mm < 1:
+        mm = 1 if include else 0
+    focus = str(parsed.get("content_focus", "") or "").strip()[:500]
+    if not focus:
+        focus = DEFAULT_BLOG_PLAN.content_focus
+
+    plan = BlogGenerationPlan(topic_kind=kind, mermaid_max=mm, content_focus=focus)
+    logger.info("blog topic classified: kind=%s mermaid_max=%s", plan.topic_kind, plan.mermaid_max)
+    return plan
 
 
 def _extract_json(text: str) -> dict[str, Any]:
@@ -89,6 +214,25 @@ Return JSON with exactly these fields:
     return {"quote": quote, "author": author, "mood": mood}
 
 
+def _caption_user_prompt(topic_name: str, quote_text: str, cta: str) -> str:
+    cta_line = (cta or "").strip() or "none"
+    return f"""Write an Instagram / TikTok caption (max 2200 characters).
+
+Topic: {topic_name}
+Quote on the image: {quote_text}
+Editor CTA hint (use when it fits naturally; if the hint is literally "none", you may skip it): {cta_line}
+
+Requirements:
+1) Write 1–3 short paragraphs that hook the reader and connect to the *idea* of the quote—do not paste the full quote as the entire caption; you may quote a short phrase in quotation marks if it helps.
+2) After one blank line, add a **keyword hashtag block**: **8–14** hashtags for discovery. Each tag must be one token starting with #, using only letters, numbers, and underscores (no spaces inside a tag). Mix:
+   - 1–2 broad tags derived from the topic name (e.g. #Mindfulness, #SlowLiving)
+   - several specific tags for themes in the quote (e.g. #Solitude, #InnerPeace)
+   - optional niche tags only if they fit
+3) When the CTA hint is not "none", weave it into a closing line or sentence when it fits.
+
+Return JSON: {{"caption": "..."}}"""
+
+
 async def generate_caption(
     topic_name: str,
     quote_text: str,
@@ -96,17 +240,11 @@ async def generate_caption(
     model: str,
 ) -> str:
     settings = get_settings()
-    user_prompt = f"""
-Write an Instagram caption under 2200 characters.
-Topic: {topic_name}
-Quote: {quote_text}
-Include relevant hashtags from the topic name and this call-to-action if it fits: {cta or "none"}
-Return JSON: {{"caption": "..."}}
-"""
+    user_prompt = _caption_user_prompt(topic_name, quote_text, cta)
     payload = {
         "model": model,
         "prompt": user_prompt,
-        "system": "Respond ONLY with valid JSON.",
+        "system": "Respond ONLY with valid JSON. The caption must include the hashtag block as specified.",
         "stream": False,
         "format": "json",
         "options": _OLLAMA_SAMPLE_OPTIONS,
@@ -167,17 +305,11 @@ Return JSON with exactly these fields:
 
 def generate_caption_sync(topic_name: str, quote_text: str, cta: str, model: str) -> str:
     settings = get_settings()
-    user_prompt = f"""
-Write an Instagram caption under 2200 characters.
-Topic: {topic_name}
-Quote: {quote_text}
-Include relevant hashtags from the topic name and this call-to-action if it fits: {cta or "none"}
-Return JSON: {{"caption": "..."}}
-"""
+    user_prompt = _caption_user_prompt(topic_name, quote_text, cta)
     payload = {
         "model": model,
         "prompt": user_prompt,
-        "system": "Respond ONLY with valid JSON.",
+        "system": "Respond ONLY with valid JSON. The caption must include the hashtag block as specified.",
         "stream": False,
         "format": "json",
         "options": _OLLAMA_SAMPLE_OPTIONS,
@@ -504,9 +636,9 @@ Rules: ```mermaid``` allowed; valid syntax. No HTML. No preamble.
         "prompt": user_prompt,
         "system": "You write Markdown only. Output nothing before or after the section body.",
         "stream": False,
-        "options": _OLLAMA_BLOG_OPTIONS,
+        "options": _OLLAMA_BLOG_LONG_OPTIONS,
     }
-    with httpx.Client(timeout=httpx.Timeout(connect=15.0, read=300.0, write=60.0, pool=10.0)) as client:
+    with httpx.Client(timeout=httpx.Timeout(connect=15.0, read=420.0, write=60.0, pool=10.0)) as client:
         r = client.post(f"{settings.ollama_base_url.rstrip('/')}/api/generate", json=payload)
         r.raise_for_status()
         data = r.json()
@@ -517,23 +649,57 @@ Rules: ```mermaid``` allowed; valid syntax. No HTML. No preamble.
     return raw.strip()
 
 
-def generate_blog_post_sync(topic: Topic, model: str) -> str:
+def generate_blog_post_sync(topic: Topic, model: str, *, plan: BlogGenerationPlan | None = None) -> str:
     """
-    Produce a Medium-friendly Markdown article with optional ```mermaid``` blocks.
+    Produce a Medium-friendly Markdown article. Mermaid depth follows ``plan`` (from classify_blog_topic_sync).
     Output is plain markdown only (no JSON wrapper).
     """
+    plan = plan or DEFAULT_BLOG_PLAN
     settings = get_settings()
     nonce = secrets.token_hex(4)
+
+    if plan.topic_kind == "technical":
+        angle = """Article angle (technical audience):
+- Prefer precise terms for components, interfaces, data flow, failure modes, and tradeoffs. Short code or pseudo-code only when it clarifies a point.
+- It is fine to go deeper on “how it works” and edge cases; assume readers can handle technical vocabulary."""
+    elif plan.topic_kind == "functional":
+        angle = """Article angle (functional / product / operations):
+- Center on who does what, outcomes, workflows, adoption, and value for teams or customers. Use concrete scenarios (“When a team …”).
+- Define jargon briefly when needed; avoid unnecessary internals unless the brief clearly demands them."""
+    else:
+        angle = """Article angle (balanced):
+- Blend clear explanation with practical takeaway. Neither a pure architecture deep-dive nor generic marketing—credible and useful."""
+
+    if plan.mermaid_max <= 0:
+        diagram_rules = """Diagrams:
+- Do NOT use ```mermaid``` code blocks. Explain structure with prose, short lists, or a markdown table if helpful."""
+    elif plan.mermaid_max == 1:
+        diagram_rules = """Diagrams (optional, at most one):
+- You MAY include at most ONE ```mermaid``` block only if a single diagram clearly clarifies structure. Keep it under ~25 nodes/lines.
+- If plain writing is enough, skip the diagram entirely.
+- After a diagram (if any), one short conversational paragraph—not a robotic caption.
+""" + _MERMAID_SYNTAX_RULES
+    else:
+        diagram_rules = """Diagrams (optional, up to two):
+- You MAY include up to TWO separate ```mermaid``` blocks only where each adds real clarity. Do not add charts for padding—many strong posts have zero diagrams.
+- Each diagram under ~25 nodes/lines.
+- After each diagram, a short paragraph in plain language.
+""" + _MERMAID_SYNTAX_RULES
+
+    focus_line = f"\nEditor focus for this run: {plan.content_focus}\n"
+
     user_prompt = f"""
 Write a blog post in Markdown for people who care about: {topic.name}
 
 Context from the editor: {topic.description or "(none)"}
 Adopt this voice as much as it fits: {topic.style}
 
-Request id: {nonce} — avoid generic “SEO sludge”; sound like one careful human wrote it for peers, not a brochure.
+{angle}
+{focus_line}
+Request id: {nonce} — avoid generic “SEO sludge”; sound like one careful human wrote it for readers, not a brochure.
 
 Voice and rhythm (critical):
-- Mix short punchy sentences with longer explanatory ones. Vary paragraph length; some sections can be one or two sentences only.
+- Mix short punchy sentences with longer explanatory ones. Vary paragraph length; a few tight sections are fine, but most ## sections should include **several developed paragraphs** (not only one-liners).
 - Prefer concrete scenarios, numbers, or “for example …” over abstract slogans. It’s fine to acknowledge tradeoffs or “when this breaks down.”
 - Use **bold** sparingly for real emphasis, not every other phrase. Bullets only where they actually help (steps, options), not for every paragraph.
 - You may address the reader as “you” occasionally, or pose a real question—don’t stay in passive corporate voice.
@@ -545,30 +711,34 @@ Phrases and patterns to AVOID (they read as machine-default):
 Structure:
 - Output ONLY the article as Markdown. No preamble. No markdown wrapper fence around the whole post.
 - First line: a single H1 title that sounds like a human headline, not a keyword stack.
-- Use ## and ###; let section titles be specific (not “Introduction” / “Overview” unless unavoidable).
-- Roughly 900–2000 words unless the topic is very narrow.
+- Use ## and ###; aim for **at least five ## sections** (more if the topic warrants). Section titles must be specific (not “Introduction” / “Overview” unless unavoidable).
+- **Length:** target **about 1,800–3,500 words** for a normal topic—substantial, article-length copy. Only go shorter if the brief is explicitly narrow; never compress into a skimpy outline or bullet-only post unless the topic truly fits that shape.
 
-Diagrams (required):
-- At least 2 separate ```mermaid``` blocks with valid Mermaid (e.g. flowchart TD, sequenceDiagram, graph LR). Keep each under ~25 nodes/lines.
-- After each diagram, a short paragraph in plain language—conversational, not a caption robot.
+{diagram_rules}
 
 Technical: no HTML. Links as markdown [text](url) or (#). No meta-commentary about how the post was written.
 
 Start with the # title line only.
 """
+    sys_mermaid = (
+        " Follow diagram rules in the prompt exactly (including when to omit Mermaid)."
+        if plan.mermaid_max > 0
+        else " Do not use Mermaid diagram blocks."
+    )
     payload = {
         "model": model,
         "prompt": user_prompt,
         "system": (
             "You are an experienced technical writer and blogger. You write in Markdown only. "
             "Your prose is natural, specific, and slightly informal when the topic allows—never stiff, "
-            "never filler, never obviously templated. You follow the user’s structural rules (headings, "
-            "mermaid diagrams) exactly."
+            "never filler, never obviously templated. "
+            "You write long-form articles: meet the word-count and section-depth targets in the prompt—do not end early with a thin summary."
+            + sys_mermaid
         ),
         "stream": False,
-        "options": _OLLAMA_BLOG_OPTIONS,
+        "options": _OLLAMA_BLOG_LONG_OPTIONS,
     }
-    with httpx.Client(timeout=httpx.Timeout(connect=15.0, read=300.0, write=60.0, pool=10.0)) as client:
+    with httpx.Client(timeout=httpx.Timeout(connect=15.0, read=420.0, write=60.0, pool=10.0)) as client:
         r = client.post(f"{settings.ollama_base_url.rstrip('/')}/api/generate", json=payload)
         r.raise_for_status()
         data = r.json()

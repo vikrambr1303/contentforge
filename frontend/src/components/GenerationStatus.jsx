@@ -23,7 +23,7 @@ function formatEta(job, nowMs = Date.now()) {
   return `~${Math.ceil(rem)}s left`;
 }
 
-export default function GenerationStatus({ jobIds, onSettled }) {
+export default function GenerationStatus({ jobIds, onSettled, onRemoveJobId }) {
   const [jobs, setJobs] = useState([]);
   const [polledOnce, setPolledOnce] = useState(false);
   const [etaTick, setEtaTick] = useState(0);
@@ -97,14 +97,43 @@ export default function GenerationStatus({ jobIds, onSettled }) {
   return (
     <div className="cf-card p-4 sm:p-5 space-y-3">
       <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Generation jobs</p>
-      {polledOnce && jobs.length === 0 && (
+      {polledOnce && jobs.length === 0 && jobIds?.length > 0 && (
         <p className="text-xs text-slate-500 leading-relaxed">
-          No status returned for these IDs (they may be old or removed). Use &quot;Clear job list&quot; to reset.
+          No status returned for these IDs (they may be old or removed). Use{" "}
+          <span className="text-slate-400">Remove</span> on each row or clear the whole list.
         </p>
       )}
       {!polledOnce && <p className="text-xs text-slate-500">Checking status…</p>}
       <ul className="space-y-3 text-sm">
-        {jobs.map((j) => {
+        {(jobIds || []).map((jid) => {
+          const j = jobs.find((row) => row.id === jid);
+          if (!j) {
+            return (
+              <li
+                key={jid}
+                className="rounded-xl border border-forge-800/90 bg-forge-950/50 p-3.5 ring-1 ring-inset ring-white/[0.02]"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <span className="font-mono text-slate-500 text-xs">#{jid}</span>
+                    <p className="text-xs text-slate-500 mt-1 leading-snug">
+                      {polledOnce ? "No status from API (removed job or network)." : "Loading…"}
+                    </p>
+                  </div>
+                  {onRemoveJobId ? (
+                    <button
+                      type="button"
+                      onClick={() => onRemoveJobId(Number(jid))}
+                      className="cf-btn-ghost text-xs shrink-0 py-1.5 text-slate-400 hover:text-rose-300"
+                      aria-label={`Remove job ${jid} from watch list`}
+                    >
+                      Remove
+                    </button>
+                  ) : null}
+                </div>
+              </li>
+            );
+          }
           const rawP = j.progress_percent ?? j.progressPercent;
           const p = Math.max(0, Math.min(100, Number(rawP) || 0));
           const terminal = j.status === "done" || j.status === "failed";
@@ -119,24 +148,40 @@ export default function GenerationStatus({ jobIds, onSettled }) {
           return (
             <li key={j.id} className="rounded-xl border border-forge-800/90 bg-forge-950/50 p-3.5 space-y-2 ring-1 ring-inset ring-white/[0.02]">
               <div className="flex items-center justify-between gap-2">
-                <span className="text-slate-200 text-sm">
+                <span className="text-slate-200 text-sm min-w-0">
                   <span className="font-mono text-slate-500 text-xs">#{j.id}</span>{" "}
                   <span className="text-slate-500">·</span> {j.job_type}{" "}
                   <span className="text-slate-500">·</span> topic {j.topic_id}
                 </span>
-                <span
-                  className={
-                    j.status === "done"
-                      ? "text-[10px] font-semibold uppercase tracking-wide text-emerald-400 shrink-0 px-2 py-0.5 rounded-md bg-emerald-500/10 ring-1 ring-emerald-500/20"
-                      : j.status === "failed"
-                        ? "text-[10px] font-semibold uppercase tracking-wide text-rose-400 shrink-0 px-2 py-0.5 rounded-md bg-rose-500/10 ring-1 ring-rose-500/20"
-                        : j.status === "running"
-                          ? "text-[10px] font-semibold uppercase tracking-wide text-amber-300 shrink-0 px-2 py-0.5 rounded-md bg-amber-500/10 ring-1 ring-amber-500/20"
-                          : "text-[10px] font-semibold uppercase tracking-wide text-slate-400 shrink-0 px-2 py-0.5 rounded-md bg-forge-800 ring-1 ring-forge-700/80"
-                  }
-                >
-                  {j.status}
-                </span>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <span
+                    className={
+                      j.status === "done"
+                        ? "text-[10px] font-semibold uppercase tracking-wide text-emerald-400 px-2 py-0.5 rounded-md bg-emerald-500/10 ring-1 ring-emerald-500/20"
+                        : j.status === "failed"
+                          ? "text-[10px] font-semibold uppercase tracking-wide text-rose-400 px-2 py-0.5 rounded-md bg-rose-500/10 ring-1 ring-rose-500/20"
+                          : j.status === "running"
+                            ? "text-[10px] font-semibold uppercase tracking-wide text-amber-300 px-2 py-0.5 rounded-md bg-amber-500/10 ring-1 ring-amber-500/20"
+                            : "text-[10px] font-semibold uppercase tracking-wide text-slate-400 px-2 py-0.5 rounded-md bg-forge-800 ring-1 ring-forge-700/80"
+                    }
+                  >
+                    {j.status}
+                  </span>
+                  {onRemoveJobId ? (
+                    <button
+                      type="button"
+                      onClick={() => onRemoveJobId(j.id)}
+                      className="rounded-md p-1.5 text-slate-500 hover:text-rose-300 hover:bg-forge-800/80 transition"
+                      aria-label={`Remove job ${j.id} from watch list`}
+                      title="Remove from list"
+                    >
+                      <span className="sr-only">Remove from list</span>
+                      <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+                        <path d="M18 6L6 18M6 6l12 12" strokeLinecap="round" />
+                      </svg>
+                    </button>
+                  ) : null}
+                </div>
               </div>
               {j.stage && <p className="text-xs text-slate-500 leading-snug">{j.stage}</p>}
               <div className="h-2 rounded-full bg-forge-800 overflow-hidden ring-1 ring-inset ring-black/20">

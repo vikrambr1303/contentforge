@@ -21,6 +21,7 @@ export default function ContentLibrary() {
   const [zipBusy, setZipBusy] = useState(false);
   const watchedJobIds = useAppStore((s) => s.watchedJobIds);
   const clearWatchedJobIds = useAppStore((s) => s.clearWatchedJobIds);
+  const removeWatchedJobIds = useAppStore((s) => s.removeWatchedJobIds);
 
   const topicMap = useMemo(() => Object.fromEntries(topics.map((t) => [t.id, t])), [topics]);
 
@@ -171,7 +172,11 @@ export default function ContentLibrary() {
               Clear job list
             </button>
           </div>
-          <GenerationStatus jobIds={watchedJobIds} onSettled={() => load()} />
+          <GenerationStatus
+            jobIds={watchedJobIds}
+            onRemoveJobId={(id) => removeWatchedJobIds([id])}
+            onSettled={() => load()}
+          />
         </div>
       ) : null}
 

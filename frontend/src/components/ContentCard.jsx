@@ -52,6 +52,8 @@ export default function ContentCard({
   const [quote, setQuote] = useState(item.quote_text || "");
   const [accountId, setAccountId] = useState(accounts[0]?.id || "");
   const [revisionOpen, setRevisionOpen] = useState(false);
+  const [captionBusy, setCaptionBusy] = useState(false);
+  const [captionCopied, setCaptionCopied] = useState(false);
 
   useEffect(() => {
     if (!Array.isArray(accounts) || accounts.length === 0) return;
@@ -95,6 +97,46 @@ export default function ContentCard({
 
   function setStatus(status) {
     api.content.patch(item.id, { status }).then(() => onRefresh?.());
+  }
+
+  async function copyCaption() {
+    let text = (item.caption_text || "").trim();
+    if (!text) {
+      setCaptionBusy(true);
+      try {
+        const updated = await api.content.refreshCaption(item.id);
+        text = (updated.caption_text || "").trim();
+        onRefresh?.();
+      } catch (e) {
+        alert(e.response?.data?.detail || e.message);
+        return;
+      } finally {
+        setCaptionBusy(false);
+      }
+    }
+    if (!text) {
+      alert("Add quote text first, then regenerate the caption.");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      setCaptionCopied(true);
+      setTimeout(() => setCaptionCopied(false), 2000);
+    } catch {
+      alert("Could not copy to clipboard.");
+    }
+  }
+
+  async function refreshCaptionOnly() {
+    setCaptionBusy(true);
+    try {
+      await api.content.refreshCaption(item.id);
+      onRefresh?.();
+    } catch (e) {
+      alert(e.response?.data?.detail || e.message);
+    } finally {
+      setCaptionBusy(false);
+    }
   }
 
   function post() {
@@ -168,6 +210,36 @@ export default function ContentCard({
             <p className="mt-2 text-xs text-slate-500 italic">— {item.quote_author}</p>
           ) : null}
         </div>
+        {item.kind !== "blog" ? (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="cf-label">Caption</span>
+              <div className="flex flex-wrap gap-1.5 justify-end">
+                <button
+                  type="button"
+                  onClick={copyCaption}
+                  disabled={captionBusy}
+                  className="cf-btn-secondary text-xs py-1.5 px-2.5 disabled:opacity-50"
+                >
+                  {captionCopied ? "Copied" : captionBusy ? "…" : "Copy caption"}
+                </button>
+                <button
+                  type="button"
+                  onClick={refreshCaptionOnly}
+                  disabled={captionBusy}
+                  className="cf-btn-ghost text-xs py-1.5 px-2 disabled:opacity-50"
+                >
+                  Regenerate
+                </button>
+              </div>
+            </div>
+            <p className="text-xs text-slate-400 whitespace-pre-wrap break-words max-h-36 overflow-y-auto rounded-lg bg-forge-950/50 px-2.5 py-2 ring-1 ring-white/5">
+              {item.caption_text?.trim()
+                ? item.caption_text
+                : "No caption yet — Regenerate (needs quote text), or run a full generate."}
+            </p>
+          </div>
+        ) : null}
         <span
           className={`inline-flex w-fit text-[10px] font-semibold uppercase tracking-wider px-2.5 py-1 rounded-md ${statusBadgeClass(item.status)}`}
         >

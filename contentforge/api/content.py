@@ -20,7 +20,7 @@ from schemas.content import (
     ContentItemUpdate,
     ReviseContentRequest,
 )
-from services import blog_service, image_service
+from services import blog_service, caption_service, image_service
 from tasks.generate_content import run_revise_blog, run_revise_social
 
 router = APIRouter(prefix="/content", tags=["content"])
@@ -141,6 +141,19 @@ def revise_content(item_id: int, body: ReviseContentRequest, db: Session = Depen
     return {"job_id": job_id}
 
 
+@router.post("/{item_id}/caption/refresh", response_model=ContentItemOut)
+def refresh_content_caption(item_id: int, db: Session = Depends(get_db)) -> ContentItem:
+    row = db.get(ContentItem, item_id)
+    if not row:
+        raise HTTPException(404)
+    if row.kind != "social":
+        raise HTTPException(400, "Captions apply only to social content items")
+    caption_service.refresh_caption(db, row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
 @router.get("/{item_id}", response_model=ContentItemOut)
 def get_content(item_id: int, db: Session = Depends(get_db)) -> ContentItem:
     row = db.get(ContentItem, item_id)
@@ -166,6 +179,8 @@ def patch_content(item_id: int, body: ContentItemUpdate, db: Session = Depends(g
         out = _safe_path(row.image_path)
         if bg and out and bg.exists() and row.quote_text:
             image_service.composite_quote(bg, out, row.quote_text, row.quote_author or "")
+        if row.kind == "social":
+            caption_service.refresh_caption(db, row)
     else:
         for k, v in data.items():
             setattr(row, k, v)

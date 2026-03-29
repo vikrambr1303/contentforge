@@ -33,8 +33,15 @@
     @apply placeholder:text-slate-600 focus:border-sky-500/45 focus:outline-none focus:ring-2 focus:ring-sky-500/20;
   }
 
+  /* Native <select> + border + outer ring reads as a double border; keep one clear edge + inset focus. */
   .cf-select {
-    @apply cf-input cursor-pointer;
+    @apply w-full cursor-pointer appearance-none rounded-lg border border-forge-700/80 bg-forge-950/90 py-2.5 pl-3 pr-9 text-sm text-slate-100 shadow-inner shadow-black/20 transition;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='none' stroke='%2394a3b8' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m4 6 4 4 4-4'/%3E%3C/svg%3E");
+    background-position: right 0.5rem center;
+    background-repeat: no-repeat;
+    background-size: 1rem 1rem;
+    @apply focus:border-sky-500/50 focus:outline-none focus:ring-0 focus:ring-offset-0;
+    @apply focus-visible:shadow-[inset_0_0_0_1px_rgba(56,189,248,0.35)];
   }
 
   .cf-btn-primary {

@@ -13,6 +13,7 @@ export default function Generate() {
   const watchedJobIds = useAppStore((s) => s.watchedJobIds);
   const addWatchedJobIds = useAppStore((s) => s.addWatchedJobIds);
   const clearWatchedJobIds = useAppStore((s) => s.clearWatchedJobIds);
+  const removeWatchedJobIds = useAppStore((s) => s.removeWatchedJobIds);
   const [busy, setBusy] = useState(false);
   const [blogBusy, setBlogBusy] = useState(false);
 
@@ -52,7 +53,7 @@ export default function Generate() {
     <div className="space-y-10">
       <PageHeader
         title="Generate"
-        subtitle="Social pipeline (quote, image, video) or a long-form blog draft with Mermaid diagrams — copy from the library when done."
+        subtitle="Social pipeline (quote, image, video) or a long-form blog draft — optional Mermaid diagrams when they fit the topic — copy from the library when done."
       />
 
       <div className="flex flex-wrap gap-2 border-b border-forge-800/80 pb-3">
@@ -127,9 +128,10 @@ export default function Generate() {
             <div className="cf-card p-5 sm:p-6 space-y-5 ring-1 ring-violet-500/15">
               <h2 className="text-sm font-semibold text-violet-200">Blog article</h2>
               <p className="text-xs text-slate-500 leading-relaxed">
-                Ollama writes Markdown from your topic (title, sections, 2+ Mermaid diagrams). The worker calls{" "}
-                <strong className="text-slate-400">Kroki</strong> to turn each diagram into a PNG for Medium-style paste. Requires
-                outbound HTTPS from the worker.
+                The worker first classifies the topic (technical vs functional vs balanced), then Ollama writes Markdown. Mermaid
+                diagrams are <strong className="text-slate-400">optional</strong> (0–2) based on that plan. When present,{" "}
+                <strong className="text-slate-400">Kroki</strong> renders each to a PNG for Medium-style paste. Requires outbound
+                HTTPS from the worker.
               </p>
               <label className="block">
                 <span className="cf-label mb-1.5">Topic</span>
@@ -171,7 +173,10 @@ export default function Generate() {
                 </button>
               </div>
             )}
-            <GenerationStatus jobIds={watchedJobIds} />
+            <GenerationStatus
+              jobIds={watchedJobIds}
+              onRemoveJobId={(id) => removeWatchedJobIds([id])}
+            />
           </div>
         </div>
       </div>
